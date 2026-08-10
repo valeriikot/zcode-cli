@@ -295,7 +295,7 @@ export function suspendedZaiLoginCommand(
   return { args: [runtimeEntry, "login"], program: runtimeExecutable };
 }
 
-export function isRewindCancelKey(data: string): boolean {
+function isRewindCancelKey(data: string): boolean {
   return matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "ctrl+d");
 }
 

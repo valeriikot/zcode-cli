@@ -292,10 +292,17 @@ export class RemoteClient {
     if (workspaces.length === 0) {
       workspaces = remoteWorkspaceSummaries(await this.listWorkspaces({ signal: options.signal }));
     }
-    const requested = options.workspaceKey
-      ?? (workspaces.length === 1 ? workspaces[0]!.key : undefined);
-    if (requested !== undefined) {
-      this.defaultBridge = await this.openBridge(requested, { signal: options.signal });
+    if (options.workspaceKey !== undefined) {
+      this.defaultBridge = await this.openBridge(options.workspaceKey, { signal: options.signal });
+      return this.snapshot(workspaces);
+    }
+    // Bridging the only workspace is a convenience, so its failure must not hide a working pairing.
+    if (workspaces.length === 1) {
+      try {
+        this.defaultBridge = await this.openBridge(workspaces[0]!.key, { signal: options.signal });
+      } catch (error) {
+        this.log(`[bridge] optional bridge failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     return this.snapshot(workspaces);
   }

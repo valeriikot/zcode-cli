@@ -12,6 +12,7 @@ import {
 } from "./zai-oauth.ts";
 import { requestAppServer } from "./app-server-client.ts";
 import { runPluginCommand } from "./plugin-cli.ts";
+import { runRemoteCommand } from "./remote-cli.ts";
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const packageManifestPath = join(packageRoot, "package.json");
@@ -286,6 +287,19 @@ export async function main(args: string[]): Promise<number> {
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     return 1;
   }
+
+  const remoteAbortController = new AbortController();
+  const cancelRemoteCommand = () => remoteAbortController.abort();
+  process.once("SIGINT", cancelRemoteCommand);
+  process.once("SIGTERM", cancelRemoteCommand);
+  let remoteCommand: number | undefined;
+  try {
+    remoteCommand = await runRemoteCommand(args, { signal: remoteAbortController.signal });
+  } finally {
+    process.off("SIGINT", cancelRemoteCommand);
+    process.off("SIGTERM", cancelRemoteCommand);
+  }
+  if (remoteCommand !== undefined) return remoteCommand;
 
   const node = resolveNodeExecutable();
   const pluginAbortController = new AbortController();

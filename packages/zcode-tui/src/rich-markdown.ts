@@ -3021,7 +3021,9 @@ function windowChunkStarts(lines: readonly string[]): number[] {
   for (const [index, line] of lines.entries()) {
     const marker = rootListItemMarker(line);
     if (!marker) {
-      if (!/^[ \t]+\S/u.test(line)) return [0];
+      // An indented line always extends a bullet item, but under a wider ordered
+      // marker it may open a sibling item instead and shift every later number.
+      if (first.number !== undefined || !/^[ \t]+\S/u.test(line)) return [0];
       continue;
     }
     // An ordered list is numbered from its first marker onwards, so a chunk keeps

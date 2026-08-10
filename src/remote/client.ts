@@ -15,6 +15,9 @@ const defaultRequestTimeoutMs = 30_000;
 const defaultPairingTimeoutMs = 60_000;
 const defaultBridgeReconnectTimeoutMs = 15_000;
 
+/** Relay states that can never become `paired` again without another `start()`. */
+const terminalRelayStates = new Set<RelayState>(["closed", "error", "kicked"]);
+
 export type RemoteLogger = (line: string) => void;
 
 export interface RemoteRequestOptions {
@@ -323,12 +326,16 @@ export class RemoteClient {
 
   async waitPaired(options: { pairingTimeoutMs?: number; signal?: AbortSignal } = {}): Promise<void> {
     if (this.relay.state === "paired") return;
+    if (terminalRelayStates.has(this.relay.state)) {
+      throw new Error(`The remote relay connection ended while pairing (${this.relay.state}).`);
+    }
     const timeoutMs = options.pairingTimeoutMs ?? defaultPairingTimeoutMs;
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (): void => {
         settled = true;
         clearTimeout(timer);
+        removeFailureListener();
         removeStateListener();
         options.signal?.removeEventListener("abort", onAbort);
       };
@@ -343,6 +350,13 @@ export class RemoteClient {
         reject(timeoutError(`Pairing with the remote desktop timed out after ${timeoutMs}ms.`));
       }, timeoutMs);
       timer.unref?.();
+      // A reported failure is terminal for this attempt, so surface it instead of burning the whole
+      // pairing timeout on a host that is never going to answer.
+      const removeFailureListener = this.relay.onFailure((failure) => {
+        if (settled) return;
+        finish();
+        reject(new Error(`The remote desktop could not be paired: ${failure.reason}.`));
+      });
       const removeStateListener = this.relay.onState((state) => {
         if (settled) return;
         if (state === "paired") {
@@ -350,8 +364,7 @@ export class RemoteClient {
           resolve();
           return;
         }
-        // A terminal relay state can never become `paired` again without a new start().
-        if (state === "kicked" || state === "closed") {
+        if (terminalRelayStates.has(state)) {
           finish();
           reject(new Error(`The remote relay connection ended while pairing (${state}).`));
         }

@@ -383,10 +383,43 @@ Device records live beside the configuration in
 `~/.zcode/cli/remote-devices.json` with owner-only permissions. Credentials are
 redacted from all command output and error messages.
 
-This release covers pairing, device management and the transport layer.
-Driving a full interactive conversation over a remote connection is not
-implemented yet, so `zcode remote connect` verifies and inspects a device
-rather than opening a remote session.
+### Serving this machine to the web remote control
+
+The CLI can also be the *controllable* side: it creates its own pairing URL and
+answers controllers over the same relay protocol, so the official web remote
+control (or another machine running `zcode remote add`) can reach this machine.
+
+```bash
+zcode remote link create --name workstation
+zcode remote serve
+```
+
+`link create` generates fresh device credentials, stores them in
+`~/.zcode/cli/remote-host.json` with owner-only permissions and prints the
+pairing URL exactly once. The URL is a device credential: pass
+`--url-file <file>` to write it to an owner-only file instead of the terminal.
+Running `link create` again rotates the credentials, which invalidates every
+previously issued URL — that is how a leaked link is revoked. `--relay <url>`
+overrides the default `https://zcode.z.ai/remote/v4` pairing endpoint.
+
+```bash
+zcode remote link              # redacted summary
+zcode remote link show --reveal
+zcode remote link revoke --yes
+```
+
+`zcode remote serve [--workspace <path>]` connects to the relay in the
+device role and waits for a controller. It advertises one workspace (the given
+path, defaulting to the current directory) and serves the controller's channel
+calls through the bundled ZCode runtime's app-server, so a web session can
+inspect and drive that workspace. Serving continues until Ctrl+C; every state
+transition is printed, and `--json` emits machine-readable event lines instead.
+
+Pairing, device management, the transport layer and hosted channel calls are
+covered today. Continuous event streams from the local runtime (for example
+live task output pushed to the web client) are not bridged yet: the host
+answers request/response channel calls and accepts event subscriptions without
+firing them.
 
 ## Requirements
 

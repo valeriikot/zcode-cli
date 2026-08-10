@@ -221,6 +221,22 @@ zcode remote add --url-file ./remote-url.txt --name laptop
 valid until it is regenerated under **Remote control** on that desktop, which is
 the only way to revoke a credential that has leaked.
 
+## Remote host link store
+
+This machine's own pairing link — created with `zcode remote link create` and
+served with `zcode remote serve` — is stored in `remote-host.json` in the same
+directory: `~/.zcode/cli/remote-host.json` on macOS and Linux, or
+`%USERPROFILE%\.zcode\cli\remote-host.json` on Windows. The same rules apply as
+for the device store: POSIX mode `0600`, atomic writes through a private
+temporary file, and redaction everywhere except the one-time URL output of
+`link create` and the explicit `link show --reveal`.
+
+The stored `sid`/`hash` pair is the credential a controller uses to reach this
+machine. Running `zcode remote link create` again rotates the pair and thereby
+invalidates every previously issued URL; `zcode remote link revoke` deletes the
+link entirely, after which `zcode remote serve` refuses to start until a new
+link is created.
+
 ## Theme
 
 Set `ui.theme` to `"auto"` (terminal detection), `"dark"`, or `"light"` in the

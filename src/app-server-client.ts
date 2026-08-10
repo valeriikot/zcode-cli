@@ -29,13 +29,16 @@ interface AppServerEnvelope {
 }
 
 export class AppServerRequestError extends Error {
-  constructor(
-    message: string,
-    public readonly code?: number,
-    public readonly data?: unknown
-  ) {
+  readonly code?: number;
+  readonly data?: unknown;
+
+  // Fields are assigned explicitly because Node's strip-only TypeScript mode rejects
+  // constructor parameter properties, which would break `node bin/zcode.ts` entirely.
+  constructor(message: string, code?: number, data?: unknown) {
     super(message);
     this.name = "AppServerRequestError";
+    this.code = code;
+    this.data = data;
   }
 }
 

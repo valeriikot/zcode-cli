@@ -3,20 +3,50 @@
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, posix, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { formatVersionOutput } from "../src/launcher.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-async function execute(command: string, args: string[], cwd: string): Promise<{ code: number; stdout: string }> {
+export interface PackagedCliInvocation {
+  args: string[];
+  command: string;
+  windowsVerbatimArguments: boolean;
+}
+
+export function packagedVersionInvocation(
+  binDirectory: string,
+  platform: NodeJS.Platform = process.platform
+): PackagedCliInvocation {
+  const path = platform === "win32" ? win32 : posix;
+  if (platform !== "win32") {
+    return { args: ["--version"], command: path.join(binDirectory, "zcode"), windowsVerbatimArguments: false };
+  }
+  // `cmd.exe /s` strips the outermost quote pair, so the shim path carries its own quotes and Bun
+  // must forward the command line verbatim instead of escaping it a second time; without both the
+  // invocation breaks for install prefixes containing a space.
+  return {
+    args: ["/d", "/s", "/c", `""${path.join(binDirectory, "zcode.cmd")}" --version"`],
+    command: "cmd.exe",
+    windowsVerbatimArguments: true
+  };
+}
+
+async function execute(
+  command: string,
+  args: string[],
+  cwd: string,
+  windowsVerbatimArguments = false
+): Promise<{ code: number; stdout: string }> {
   const child = Bun.spawn([command, ...args], {
     cwd,
     env: process.env,
     stdin: "ignore",
     stdout: "pipe",
-    stderr: "inherit"
+    stderr: "inherit",
+    windowsVerbatimArguments
   });
   const [code, stdout] = await Promise.all([
     child.exited,
@@ -50,14 +80,13 @@ export async function smokePackagedCli(tarball: string): Promise<void> {
     const extraction = JSON.parse(
       await readFile(join(packageRoot, "vendor", "extraction.json"), "utf8")
     ) as { cliVersion?: string };
-    const bin = process.platform === "win32"
-      ? join(temporaryDirectory, "node_modules", ".bin", "zcode.cmd")
-      : join(temporaryDirectory, "node_modules", ".bin", "zcode");
-    const command = process.platform === "win32" ? "cmd.exe" : bin;
-    const commandArgs = process.platform === "win32"
-      ? ["/d", "/s", "/c", `\"${bin}\" --version`]
-      : ["--version"];
-    const version = await execute(command, commandArgs, temporaryDirectory);
+    const invocation = packagedVersionInvocation(join(temporaryDirectory, "node_modules", ".bin"));
+    const version = await execute(
+      invocation.command,
+      invocation.args,
+      temporaryDirectory,
+      invocation.windowsVerbatimArguments
+    );
     const expectedVersion = packageManifest.version && extraction.cliVersion
       ? formatVersionOutput(packageManifest.version, extraction.cliVersion)
       : undefined;

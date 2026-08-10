@@ -15,6 +15,40 @@ function transport(script: string) {
 }
 
 describe("app-server NDJSON client", () => {
+  test("keeps the error contract without constructor parameter properties", () => {
+    const error = new AppServerRequestError("Invalid params", -32602, { field: "source" });
+
+    expect(error).toBeInstanceOf(AppServerRequestError);
+    expect(error).toBeInstanceOf(Error);
+    expect(Object.getPrototypeOf(error)).toBe(AppServerRequestError.prototype);
+    expect(error.name).toBe("AppServerRequestError");
+    expect(error.message).toBe("Invalid params");
+    expect(error.code).toBe(-32602);
+    expect(error.data).toEqual({ field: "source" });
+    expect(error.stack).toContain("AppServerRequestError");
+
+    const bare = new AppServerRequestError("App-server request failed.");
+    expect(bare.code).toBeUndefined();
+    expect(bare.data).toBeUndefined();
+    expect(Object.keys(bare)).toEqual(["code", "data", "name"]);
+  });
+
+  test("loads the CLI module graph under Node's strip-only TypeScript mode", async () => {
+    if (!node) throw new Error("Node.js is required for app-server client tests.");
+    const entry = new URL("../bin/zcode.ts", import.meta.url).href;
+    const child = Bun.spawn([node, "--input-type=module", "--eval", `await import(${JSON.stringify(entry)});`], {
+      cwd: process.cwd(),
+      env: { ...process.env, ZCODE_UPDATE_CHECK: "0" },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe"
+    });
+    const [, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+
+    expect(stderr).not.toContain("ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX");
+    expect(stderr).not.toContain("SyntaxError");
+  }, 20_000);
+
   test("returns the matching response envelope", async () => {
     const script = `
       let input = "";

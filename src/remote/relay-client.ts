@@ -23,7 +23,15 @@ export type RelayFailureListener = (failure: RelayFailure) => void;
 export type RelayPayloadListener = (payload: RelayPayload) => void;
 export type RelayStateListener = (state: RelayState) => void;
 
-const relayRole = "terminal";
+/** Relay roles: `terminal` controls a remote device, `desktop` is the controllable device. */
+export const relayRoles = {
+  desktop: "desktop",
+  terminal: "terminal"
+} as const;
+
+export type RelayRole = (typeof relayRoles)[keyof typeof relayRoles];
+
+const defaultRelayRole: RelayRole = relayRoles.terminal;
 const defaultClientName = "zcode-app-cli";
 const defaultHeartbeatIntervalMs = 10_000;
 const defaultHeartbeatAckTimeoutMs = 30_000;
@@ -117,7 +125,13 @@ export interface RelayClientOptions {
   platform?: string;
   /** Overrides {@link relayReconnectDelayMs}; tests use it to keep reconnects instant. */
   reconnectDelayMs?: (attempt: number) => number;
+  /** Relay role to authenticate as; defaults to `terminal` (the controlling side). */
+  role?: RelayRole;
   socketFactory?: RelaySocketFactory;
+  /**
+   * Deadline for a connection the peer never matches. Zero or a negative value disables it, which
+   * is how a `desktop`-role host waits indefinitely for a controller to arrive.
+   */
   waitingTimeoutMs?: number;
 }
 
@@ -155,6 +169,7 @@ export class RelayClient {
   private readonly payloadListeners = new Set<RelayPayloadListener>();
   private readonly platform: string;
   private readonly reconnectDelayMs: (attempt: number) => number;
+  private readonly role: RelayRole;
   private readonly socketFactory: RelaySocketFactory;
   private readonly stateListeners = new Set<RelayStateListener>();
   private readonly waitingTimeoutMs: number;
@@ -181,6 +196,7 @@ export class RelayClient {
     this.params = params;
     this.platform = options.platform ?? relayPlatformName(process.platform);
     this.reconnectDelayMs = options.reconnectDelayMs ?? relayReconnectDelayMs;
+    this.role = options.role ?? defaultRelayRole;
     this.socketFactory = options.socketFactory ?? webSocketRelaySocket;
     this.waitingTimeoutMs = options.waitingTimeoutMs ?? defaultWaitingTimeoutMs;
     this.lastPairStatusAckAt = this.now();
@@ -328,7 +344,7 @@ export class RelayClient {
     this.setState("authenticating");
     this.send({
       type: "auth_init",
-      role: relayRole,
+      role: this.role,
       device_sid: this.params.deviceSid,
       meta: {
         platform: this.platform,
@@ -377,7 +393,7 @@ export class RelayClient {
           deviceSid: this.params.deviceSid,
           nonce: stringField(frame["nonce"]) ?? "",
           passHash: this.params.passHash,
-          role: relayRole
+          role: this.role
         }),
         client_ts: this.now()
       });
@@ -421,8 +437,9 @@ export class RelayClient {
     this.lastPairStatusAckAt = this.now();
     if (status === "waiting") {
       // A previously paired session that drops back to waiting is a desktop restart, not a
-      // mispaired device, so it keeps the heartbeat instead of arming the pairing deadline.
-      if (this.wasPaired) {
+      // mispaired device, and a host with no waiting deadline is simply listening for its next
+      // controller. Both keep the heartbeat instead of arming the pairing deadline.
+      if (this.wasPaired || this.waitingTimeoutMs <= 0) {
         this.clearWaitingTimer();
         this.setState("waiting");
         this.startHeartbeat();
@@ -460,7 +477,9 @@ export class RelayClient {
     const mapped = relayCloseReason(code);
     this.log(`[relay] closed code=${code} mapped=${mapped ?? "none"}`);
     if (this.intentionallyClosed) return;
-    if (this.wasPaired || mapped === "desktop-disconnected") {
+    // With no waiting deadline (host mode) a transport-level drop reconnects even before the first
+    // pairing; protocol-outcome closes such as session-not-found still surface as failures.
+    if (this.wasPaired || mapped === "desktop-disconnected" || (this.waitingTimeoutMs <= 0 && mapped === undefined)) {
       this.scheduleReconnect();
       return;
     }
@@ -495,6 +514,7 @@ export class RelayClient {
 
   private startWaitingTimer(): void {
     this.clearWaitingTimer();
+    if (this.waitingTimeoutMs <= 0) return;
     this.waitingTimer = setTimeout(() => {
       if (this.currentState !== "waiting" || this.wasPaired) return;
       this.setState("error");

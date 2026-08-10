@@ -1,9 +1,12 @@
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, open, readFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 import { parseArgs } from "node:util";
 
 import { probeRemoteDevice, type RemoteConnectionSnapshot } from "./remote/client.ts";
+import type { RemoteConnectionParams } from "./remote/connection-params.ts";
 import {
   addRemoteDevice,
   findRemoteDevice,
@@ -15,11 +18,29 @@ import {
   removeRemoteDevice,
   type RemoteDeviceRecord
 } from "./remote/device-store.ts";
+import {
+  createRemoteHostLink,
+  readRemoteHostLink,
+  remoteHostLinkParams,
+  remoteHostLinkStorePath,
+  remoteHostLinkSummary,
+  remoteHostLinkUrl,
+  removeRemoteHostLink
+} from "./remote/host-link.ts";
+import {
+  RemoteHostService,
+  type RemoteHostBackend,
+  type RemoteHostServiceOptions,
+  type RemoteHostWorkspace
+} from "./remote/host.ts";
+import type { RelayFailure, RelayState } from "./remote/relay-client.ts";
 
-const managedActions = new Set(["add", "connect", "help", "list", "remove"]);
+const managedActions = new Set(["add", "connect", "help", "link", "list", "remove", "serve"]);
+const linkActions = new Set(["create", "revoke", "show"]);
 const minimumTimeoutSeconds = 5;
 const maximumTimeoutSeconds = 600;
 const defaultTimeoutSeconds = 60;
+const workspaceKeyCharacters = 12;
 
 const remoteUsage = `Usage:
   zcode remote add <url> [--name <name>] [--json]
@@ -27,9 +48,15 @@ const remoteUsage = `Usage:
   zcode remote list [--json]
   zcode remote remove <name|id> [--yes] [--json]
   zcode remote connect [<name|id>] [--workspace <key>] [--timeout <seconds>] [--json]
+  zcode remote link [show] [--reveal] [--json]
+  zcode remote link create [--name <name>] [--relay <url>] [--url-file <file>] [--json]
+  zcode remote link revoke [--yes] [--json]
+  zcode remote serve [--workspace <path>] [--json]
 
-A remote-control URL contains the desktop's device credentials. Prefer --url-file so the
-credential never enters the shell history or the process argument list.`;
+A remote-control URL contains device credentials. Prefer --url-file so the credential never
+enters the shell history or the process argument list. \`link\` manages this machine's own
+pairing URL; \`serve\` makes this machine controllable through it, e.g. from the web remote
+control.`;
 
 interface ParsedRemoteCommand {
   action: string;
@@ -37,16 +64,44 @@ interface ParsedRemoteCommand {
   json: boolean;
   name?: string;
   positionals: string[];
+  relay?: string;
+  reveal: boolean;
   timeoutSeconds?: number;
   urlFile?: string;
   workspace?: string;
   yes: boolean;
 }
 
+export interface RemoteAppServerRequestInput {
+  method: string;
+  params: Record<string, unknown>;
+  signal?: AbortSignal;
+  workingDirectory: string;
+}
+
+/** The slice of {@link RemoteHostService} the serve command drives; tests substitute a fake. */
+export interface RemoteHostServiceLike {
+  dispose(): void;
+  onFailure(listener: (failure: RelayFailure) => void): () => void;
+  onState(listener: (state: RelayState) => void): () => void;
+  start(): void;
+}
+
 export interface RunRemoteCommandOptions {
+  /** Local app-server access for `serve`; wired to the extracted runtime by the launcher. */
+  appServerRequest?: (input: RemoteAppServerRequestInput) => Promise<unknown>;
+  /** Reported in generated pairing URLs and to connecting controllers. */
+  appVersion?: string;
   confirm?: (question: string) => Promise<boolean>;
   /** Overridden by tests so no unit test opens a socket. */
   connect?: (record: RemoteDeviceRecord, input: RemoteConnectInput) => Promise<RemoteConnectionSnapshot>;
+  /** Overridden by tests so no unit test opens a socket. */
+  createHost?: (
+    params: RemoteConnectionParams,
+    backend: RemoteHostBackend,
+    hostOptions: RemoteHostServiceOptions
+  ) => RemoteHostServiceLike;
+  cwd?: string;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
   stderr?: Writable & { isTTY?: boolean };
@@ -60,7 +115,7 @@ export interface RemoteConnectInput {
   workspaceKey?: string;
 }
 
-type RemoteSpecificOption = "name" | "timeout" | "urlFile" | "workspace" | "yes";
+type RemoteSpecificOption = "name" | "relay" | "reveal" | "timeout" | "urlFile" | "workspace" | "yes";
 
 const leadingBooleanOptions = new Set(["--json", "--no-color", "--verbose"]);
 const leadingValueOptions = new Set(["--cwd", "--locale"]);
@@ -138,6 +193,8 @@ function parseRemoteCommand(args: string[]): ParsedRemoteCommand | undefined {
       locale: { type: "string" },
       name: { type: "string" },
       "no-color": { type: "boolean" },
+      relay: { type: "string" },
+      reveal: { type: "boolean" },
       timeout: { type: "string" },
       "url-file": { type: "string" },
       verbose: { type: "boolean" },
@@ -155,6 +212,8 @@ function parseRemoteCommand(args: string[]): ParsedRemoteCommand | undefined {
     json: parsed.values.json === true,
     name: text(parsed.values.name),
     positionals: parsed.positionals.slice(2),
+    relay: text(parsed.values.relay),
+    reveal: parsed.values.reveal === true,
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
     urlFile: text(parsed.values["url-file"]),
     workspace: text(parsed.values.workspace),
@@ -170,6 +229,8 @@ function assertSupportedOptions(
   const allowed = new Set(supported);
   const used: Array<[RemoteSpecificOption, boolean]> = [
     ["name", command.name !== undefined],
+    ["relay", command.relay !== undefined],
+    ["reveal", command.reveal],
     ["timeout", command.timeoutSeconds !== undefined],
     ["urlFile", command.urlFile !== undefined],
     ["workspace", command.workspace !== undefined],
@@ -180,6 +241,8 @@ function assertSupportedOptions(
 
   const displayNames: Record<RemoteSpecificOption, string> = {
     name: "--name",
+    relay: "--relay",
+    reveal: "--reveal",
     timeout: "--timeout",
     urlFile: "--url-file",
     workspace: "--workspace",
@@ -214,6 +277,31 @@ async function readUrlFile(path: string): Promise<string> {
   const line = raw.split(/\r?\n/u).map((entry) => entry.trim()).find((entry) => entry.length > 0);
   if (line === undefined) throw new Error(`No remote-control URL was found in ${printable(path)}.`);
   return line;
+}
+
+/**
+ * Writes a freshly created pairing URL to a file with owner-only permissions, so the credential
+ * never has to appear on the terminal.
+ */
+async function writeUrlFile(path: string, url: string): Promise<void> {
+  const file = await open(path, "w", 0o600);
+  try {
+    await file.writeFile(`${url}\n`, "utf8");
+  } finally {
+    await file.close();
+  }
+  if (process.platform !== "win32") await chmod(path, 0o600).catch(() => {});
+}
+
+/** The served workspace: a stable non-reversible key plus the label a controller shows. */
+export function remoteHostWorkspaceForPath(path: string): RemoteHostWorkspace {
+  const key = `ws-${createHash("sha256").update(path, "utf8").digest("hex").slice(0, workspaceKeyCharacters)}`;
+  const name = basename(path);
+  return { key, name: name.length > 0 ? name : path, path };
+}
+
+function isParamsRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function renderDeviceLine(record: RemoteDeviceRecord): string {
@@ -358,6 +446,169 @@ export async function runRemoteCommand(
       const summary = remoteDeviceSummary(record);
       print({ connection: snapshot, device: summary }, () => renderSnapshot(stdout, record!, snapshot));
       return snapshot.paired ? 0 : 1;
+    }
+
+    if (command.action === "link") {
+      const [subaction = "show", ...extra] = command.positionals;
+      const usage = "Usage: zcode remote link [show|create|revoke] [--reveal] [--name <name>]"
+        + " [--relay <url>] [--url-file <file>] [--yes]";
+      if (extra.length > 0 || !linkActions.has(subaction)) throw new Error(usage);
+
+      if (subaction === "create") {
+        assertSupportedOptions(
+          command,
+          ["name", "relay", "urlFile"],
+          "Usage: zcode remote link create [--name <name>] [--relay <url>] [--url-file <file>]"
+        );
+        const result = await createRemoteHostLink({
+          ...(command.name !== undefined ? { name: command.name } : {}),
+          ...(command.relay !== undefined ? { relayUrl: command.relay } : {})
+        }, env);
+        const url = remoteHostLinkUrl(result.record, options.appVersion);
+        const summary = remoteHostLinkSummary(result.record);
+        if (command.urlFile !== undefined) await writeUrlFile(command.urlFile, url);
+        print({
+          link: summary,
+          path: result.path,
+          rotated: result.rotated,
+          ...(command.urlFile !== undefined ? { urlFile: command.urlFile } : { url })
+        }, () => {
+          stdout.write(`${result.rotated ? "Rotated" : "Created"} the remote-control link for this machine`
+            + ` (${printable(summary.id)}).\n`);
+          if (result.rotated) stdout.write("Previously issued pairing URLs no longer work.\n");
+          stdout.write(`Device name: ${printable(summary.name)}\n`);
+          stdout.write(`Relay: ${printable(summary.host)}\n`);
+          stdout.write(`Credentials stored with owner-only permissions in ${printable(result.path)}\n`);
+          if (command.urlFile !== undefined) {
+            stdout.write(`Pairing URL written to ${printable(command.urlFile)} with owner-only permissions.\n`);
+          } else {
+            stdout.write("Pairing URL (a device credential; share it only with your own devices):\n");
+            stdout.write(`${printable(url)}\n`);
+          }
+          stdout.write("Open it in the ZCode web remote control or register it elsewhere with"
+            + " `zcode remote add`,\nthen run `zcode remote serve` here to accept the connection.\n");
+        });
+        return 0;
+      }
+
+      if (subaction === "revoke") {
+        assertSupportedOptions(command, ["yes"], "Usage: zcode remote link revoke [--yes]");
+        if (!command.yes && !await confirm("Revoke this machine's remote-control link?")) {
+          throw new Error("Remote link revocation cancelled. Use --yes for non-interactive use.");
+        }
+        const removed = await removeRemoteHostLink(env);
+        if (removed === undefined) throw new Error("No remote-control link exists. Nothing to revoke.");
+        const summary = remoteHostLinkSummary(removed.record);
+        print({ link: summary, path: removed.path }, () => {
+          stdout.write(`Revoked the remote-control link ${printable(summary.id)}.\n`);
+          stdout.write("Controllers holding the old pairing URL can no longer pair with this machine.\n");
+        });
+        return 0;
+      }
+
+      assertSupportedOptions(command, ["reveal"], "Usage: zcode remote link [show] [--reveal]");
+      const record = await readRemoteHostLink(env);
+      if (record === undefined) {
+        throw new Error("No remote-control link exists yet. Create one with `zcode remote link create`.");
+      }
+      const summary = remoteHostLinkSummary(record);
+      const url = command.reveal ? remoteHostLinkUrl(record, options.appVersion) : undefined;
+      print({ link: summary, path: remoteHostLinkStorePath(env), ...(url !== undefined ? { url } : {}) }, () => {
+        stdout.write(`Remote-control link ${printable(summary.id)} for this machine:\n`);
+        stdout.write(`  Device name: ${printable(summary.name)}\n`);
+        stdout.write(`  Relay: ${printable(summary.host)}\n`);
+        stdout.write(`  Created: ${printable(summary.createdAt)}\n`);
+        if (summary.rotatedAt !== undefined) stdout.write(`  Rotated: ${printable(summary.rotatedAt)}\n`);
+        stdout.write(`  URL: ${printable(url ?? summary.redactedUrl)}\n`);
+        if (url === undefined) stdout.write("Use --reveal to print the full pairing URL.\n");
+      });
+      return 0;
+    }
+
+    if (command.action === "serve") {
+      const usage = "Usage: zcode remote serve [--workspace <path>]";
+      assertSupportedOptions(command, ["workspace"], usage);
+      if (command.positionals.length > 0) throw new Error(usage);
+      const record = await readRemoteHostLink(env);
+      if (record === undefined) {
+        throw new Error("No remote-control link exists yet. Create one with `zcode remote link create`.");
+      }
+      const workspacePath = resolve(options.cwd ?? process.cwd(), command.workspace ?? ".");
+      const workspace = remoteHostWorkspaceForPath(workspacePath);
+      const appServerRequest = options.appServerRequest;
+      const backend: RemoteHostBackend = {
+        call: async ({ args, channel, name, signal }) => {
+          if (appServerRequest === undefined) {
+            throw new Error("The local ZCode runtime is not available for remote calls.");
+          }
+          const first = args[0];
+          return await appServerRequest({
+            method: `${channel}/${name}`,
+            params: isParamsRecord(first) ? first : {},
+            signal,
+            workingDirectory: workspacePath
+          });
+        },
+        listWorkspaces: () => [workspace]
+      };
+      const createHost = options.createHost
+        ?? ((params, hostBackend, hostOptions) => new RemoteHostService(params, hostBackend, hostOptions));
+      const host = createHost(remoteHostLinkParams(record, options.appVersion), backend, {
+        ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {}),
+        deviceName: record.name
+      });
+      const summary = remoteHostLinkSummary(record);
+      const jsonMode = command.json;
+      const emit = (event: Record<string, unknown>, human: () => void): void => {
+        if (jsonMode) writeJson(stdout, event);
+        else human();
+      };
+
+      emit({ event: "serving", link: summary, workspace }, () => {
+        stdout.write(`Serving workspace ${printable(workspace.name)} (${printable(workspacePath)})`
+          + ` as ${printable(summary.name)} via ${printable(summary.host)}.\n`);
+        stdout.write("Press Ctrl+C to stop. Controllers pair with this machine's URL"
+          + " (`zcode remote link show --reveal`).\n");
+      });
+
+      return await new Promise<number>((resolveExit) => {
+        let settled = false;
+        let offState = (): void => {};
+        let offFailure = (): void => {};
+        const finish = (code: number): void => {
+          if (settled) return;
+          settled = true;
+          offState();
+          offFailure();
+          options.signal?.removeEventListener("abort", onAbort);
+          host.dispose();
+          resolveExit(code);
+        };
+        const onAbort = (): void => {
+          emit({ event: "stopped" }, () => stdout.write("Stopped serving.\n"));
+          finish(0);
+        };
+        offState = host.onState((state) => {
+          if (state === "waiting") {
+            emit({ event: "state", state }, () => stdout.write("Waiting for a controller to connect.\n"));
+          } else if (state === "paired") {
+            emit({ event: "state", state }, () => stdout.write("Controller connected.\n"));
+          } else if (state === "reconnecting") {
+            emit({ event: "state", state }, () => stdout.write("Relay connection lost; reconnecting.\n"));
+          }
+        });
+        offFailure = host.onFailure((failure) => {
+          stderr.write(`Error: relay connection failed (${printable(failure.reason)})`
+            + `${failure.message !== undefined ? `: ${printable(failure.message)}` : ""}\n`);
+          finish(1);
+        });
+        options.signal?.addEventListener("abort", onAbort, { once: true });
+        if (options.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        host.start();
+      });
     }
 
     throw new Error(remoteUsage);

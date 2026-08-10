@@ -294,7 +294,22 @@ export async function main(args: string[]): Promise<number> {
   process.once("SIGTERM", cancelRemoteCommand);
   let remoteCommand: number | undefined;
   try {
-    remoteCommand = await runRemoteCommand(args, { signal: remoteAbortController.signal });
+    const remoteAppVersion = readDistributionVersion();
+    remoteCommand = await runRemoteCommand(args, {
+      appServerRequest: async ({ method, params, signal, workingDirectory }) => await requestAppServer({
+        method,
+        params,
+        signal: signal ?? remoteAbortController.signal,
+        transport: {
+          args: [runtimePath, "app-server"],
+          command: resolveNodeExecutable(),
+          cwd: workingDirectory,
+          env: runtimeEnvironment()
+        }
+      }),
+      ...(remoteAppVersion !== undefined ? { appVersion: remoteAppVersion } : {}),
+      signal: remoteAbortController.signal
+    });
   } finally {
     process.off("SIGINT", cancelRemoteCommand);
     process.off("SIGTERM", cancelRemoteCommand);

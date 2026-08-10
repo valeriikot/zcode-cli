@@ -35,6 +35,9 @@ interface ClientInternals {
   };
 }
 
+// Escape, Ctrl+C and Ctrl+D as the terminal delivers them in raw mode.
+const interruptKeys = ["\u001b", "\u0003", "\u0004"];
+
 function createClient(options: Partial<TuiOptions> = {}): ClientInternals {
   const client = new ZCodeTui({
     submitPrompt: async () => ({}),
@@ -44,8 +47,6 @@ function createClient(options: Partial<TuiOptions> = {}): ClientInternals {
   client.ui.requestRender = () => {};
   return client;
 }
-
-const interruptKeys = ["\u001b", "\u0003", "\u0004"];
 
 function runningJob(taskId: string): Record<string, unknown> {
   return { taskId, status: "running" };

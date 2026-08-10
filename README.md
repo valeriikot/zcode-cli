@@ -341,10 +341,13 @@ browser for interactive login or verification flows.
 
 ## Remote devices
 
-The CLI can pair with a ZCode Desktop instance over the same relay protocol the
-official web remote control uses, which lets one machine reach a desktop
-session running elsewhere. This is an independent reimplementation of that
-protocol; it is not affiliated with or derived from the official client.
+The CLI speaks both sides of the relay protocol the official web remote
+control uses: it can pair with a ZCode Desktop instance running elsewhere, and
+it can publish its own pairing link so this machine is controllable from the
+web. This is an independent reimplementation of that protocol; it is not
+affiliated with or derived from the official client.
+
+### Controlling a desktop from this machine
 
 Generate the pairing URL on the desktop under **Remote control**, then register
 it. The URL carries the desktop's device credentials, so prefer `--url-file`,

@@ -92,6 +92,8 @@ zcode --prompt "Explain this repository"
 zcode app-server
 zcode plugins list --json
 zcode plugins discover --json
+zcode remote list --json
+zcode remote serve --workspace .
 ```
 
 Marketplace and install commands are launcher-owned adapters over the
@@ -127,6 +129,39 @@ layers explicitly:
 zcode-app-cli 3.3.6-4
 zcode-runtime 0.15.2
 ```
+
+## Remote control development
+
+The relay protocol implementation lives in `src/remote/`:
+
+- `connection-params.ts` and `proof.ts` — pairing-URL parsing and redaction,
+  plus the HMAC pairing proof shared by both roles;
+- `relay-client.ts` — the persistent relay socket, authenticating as the
+  `terminal` (controlling) or `desktop` (controllable) role;
+- `rpc-transport.ts`, `ipc-codec.ts` and `channel-client.ts` — rpc-frame
+  fragmentation with checksums, the IPC value codec and channel RPC;
+- `client.ts` and `device-store.ts` — the controlling side behind
+  `zcode remote add|list|connect|remove`;
+- `host.ts` and `host-link.ts` — the controllable side behind
+  `zcode remote link` and `zcode remote serve`.
+
+Keep command parsing in `src/remote-cli.ts`. The launcher only supplies the
+app-server request that `serve` uses: hosted channel calls are answered as
+one-shot `<channel>/<name>` app-server requests, mirroring how the plugin
+commands use `src/app-server-client.ts`. Remote-control URLs and the stored
+`sid`/`hash` pairs are credentials — never let them reach logs, transcripts or
+error messages; use the redacted summaries instead.
+
+Every remote suite runs without opening a socket:
+
+```bash
+bun test remote
+```
+
+`test/remote-host.test.ts` ends with a loopback suite that pairs the real
+`RemoteClient` with the real `RemoteHostService` through an in-memory relay.
+Extend it whenever either side of the protocol changes, so the controlling and
+controllable halves are proven to interoperate.
 
 ## OAuth login override
 

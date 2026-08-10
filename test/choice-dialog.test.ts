@@ -89,6 +89,115 @@ describe("TUI choice dialog", () => {
     expect(host.children).toHaveLength(0);
   });
 
+  test("masks one asterisk per user-perceived character and keeps the cursor", async () => {
+    const root = new Container();
+    const host = new Container();
+    const focusState: { current: Component | null } = { current: null };
+    const ui = {
+      terminal: { rows: 24 },
+      requestRender() {},
+      setFocus(component: Component | null) {
+        focusState.current = component;
+      }
+    } as unknown as TUI;
+    root.addChild(host);
+
+    const pending = promptText(ui, host, createTheme(false), {
+      title: "Enter API key",
+      prompt: "The key stays hidden.",
+      mask: true
+    });
+
+    focusState.current?.handleInput?.("🔑a");
+    const rendered = root.render(80).join("\n");
+    expect(rendered).not.toContain("🔑");
+    expect(rendered).toContain("**");
+    expect(rendered).not.toContain("***");
+
+    focusState.current?.handleInput?.("b");
+    focusState.current?.handleInput?.("\r");
+    expect(await pending).toBe("🔑ab");
+  });
+
+  test("adapts dialog heights to a terminal resized while it is open", async () => {
+    const root = new Container();
+    const host = new Container();
+    const focusState: { current: Component | null } = { current: null };
+    const terminal = { rows: 18 };
+    const ui = {
+      terminal,
+      requestRender() {},
+      setFocus(component: Component | null) {
+        focusState.current = component;
+      }
+    } as unknown as TUI;
+    root.addChild(host);
+
+    const pending = choose(ui, host, createTheme(false), {
+      title: "Ready to implement?",
+      prompt: "Review the plan.",
+      contentLabel: "Plan",
+      content: new Text(
+        Array.from({ length: 30 }, (_, index) => `plan line ${index + 1}`).join("\n"),
+        0,
+        0
+      ),
+      items: [
+        { value: "approve", label: "Approve and continue" },
+        { value: "refine", label: "Keep planning" }
+      ]
+    });
+
+    expect(root.render(60).join("\n")).toContain("Plan 1–6 of 30");
+
+    terminal.rows = 40;
+    expect(root.render(60).join("\n")).toContain("Plan 1–28 of 30");
+
+    terminal.rows = 12;
+    const shrunk = root.render(60);
+    expect(shrunk.join("\n")).toContain("Plan 1–1 of 30");
+    expect(shrunk.length).toBeLessThanOrEqual(12);
+
+    focusState.current?.handleInput?.("\x1b");
+    expect(await pending).toBeNull();
+  });
+
+  test("adapts the visible choice window to a terminal resized while it is open", async () => {
+    const root = new Container();
+    const host = new Container();
+    const focusState: { current: Component | null } = { current: null };
+    const terminal = { rows: 24 };
+    const ui = {
+      terminal,
+      requestRender() {},
+      setFocus(component: Component | null) {
+        focusState.current = component;
+      }
+    } as unknown as TUI;
+    root.addChild(host);
+
+    const pending = choose(ui, host, createTheme(false), {
+      title: "Choose action",
+      prompt: "Select one.",
+      items: Array.from({ length: 10 }, (_, index) => ({
+        value: `action-${index}`,
+        label: `Action ${index}`
+      }))
+    });
+
+    const visibleItems = () => root.render(60).filter((line) => line.includes("Action ")).length;
+    expect(visibleItems()).toBe(8);
+
+    terminal.rows = 12;
+    expect(visibleItems()).toBe(4);
+
+    terminal.rows = 24;
+    expect(visibleItems()).toBe(8);
+
+    focusState.current?.handleInput?.("\x1b");
+    expect(await pending).toBeNull();
+  });
+
   test("wraps long unmasked input and submits the complete value", async () => {
     const root = new Container();
     const host = new Container();

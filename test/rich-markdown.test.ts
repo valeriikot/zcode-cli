@@ -4460,6 +4460,90 @@ describe("TUI rich Markdown", () => {
     ]);
   });
 
+  test("keeps windowed chunks from re-parsing constructs that span a boundary", () => {
+    const indentedContinuation = [
+      ...Array.from({ length: 80 }, (_, index) => `- item ${index + 1}`),
+      "    lazy continuation"
+    ].join("\n");
+    const sources = [
+      indentedContinuation,
+      [...Array.from({ length: 80 }, (_, index) => `- item ${index + 1}`), "lazy paragraph tail"]
+        .join("\n"),
+      [
+        ...Array.from({ length: 79 }, (_, index) => `- item ${index + 1}`),
+        "",
+        "Setext heading",
+        "=============="
+      ].join("\n"),
+      Array.from({ length: 100 }, (_, index) => `- item ${index + 1}`).join("\n\n"),
+      ["intro", "", ...Array.from({ length: 120 }, (_, index) => `    code ${index}`)].join("\n"),
+      Array.from({ length: 120 }, (_, index) => `> quoted ${index + 1}`).join("\n")
+    ];
+
+    for (const source of sources) {
+      for (const width of [40, 60, 80, 100]) {
+        const component = new RichMarkdown(source, 1, createTheme(false));
+        const full = component.render(width);
+        const windowed = component.renderWindow(width, 0, full.length);
+
+        expect(windowed.lines).toEqual(full);
+        expect(windowed.totalLines).toBe(full.length);
+      }
+    }
+
+    const continuation = new RichMarkdown(indentedContinuation, 1, createTheme(false));
+    const rendered = continuation.renderWindow(80, 0, 200);
+    expect(rendered.lines.some((line) => line.trim() === "lazy continuation")).toBe(true);
+    expect(rendered.lines.some((line) => line.includes("```"))).toBe(false);
+  });
+
+  test("pages a tight list while keeping every item on its own chunk boundary", () => {
+    const component = new RichMarkdown(
+      Array.from({ length: 300 }, (_, index) => `- item ${index + 1}\n  detail ${index + 1}`).join("\n"),
+      1,
+      createTheme(false)
+    );
+    const full = component.render(80);
+    const internal = component as unknown as { windowLayout?: { parts: unknown[] } };
+
+    expect(component.renderWindow(80, 0, full.length)).toEqual({
+      lines: full,
+      totalLines: full.length
+    });
+    expect(internal.windowLayout?.parts.length).toBeGreaterThan(1);
+  });
+
+  test("avoids incremental setup for a restored large flat root list", () => {
+    for (const items of [
+      Array.from({ length: 65 }, (_, index) => `- item ${index}`),
+      Array.from({ length: 65 }, (_, index) => `${index + 1}. item ${index}`)
+    ]) {
+      const restored = new RichMarkdown(items.join("\n"), 1, createTheme(true));
+      restored.render(80);
+      const restoredInternal = restored as unknown as {
+        renderedSegments: Array<{ component: unknown }>;
+      };
+      expect(restoredInternal.renderedSegments[0]?.component).toBeInstanceOf(Markdown);
+
+      const streamed = new RichMarkdown(items[0]!, 1, createTheme(true));
+      streamed.render(80);
+      streamed.appendText(`\n${items.slice(1).join("\n")}`);
+      streamed.render(80);
+      const streamedInternal = streamed as unknown as {
+        renderedSegments: Array<{ component: { constructor: { name: string } } }>;
+      };
+      expect(streamedInternal.renderedSegments[0]?.component.constructor.name)
+        .toBe("StreamingStableListMarkdown");
+
+      streamed.setText(items.map((item) => item.replace("item", "replacement")).join("\n"));
+      streamed.render(80);
+      const replacedInternal = streamed as unknown as {
+        renderedSegments: Array<{ component: unknown }>;
+      };
+      expect(replacedInternal.renderedSegments[0]?.component).toBeInstanceOf(Markdown);
+    }
+  });
+
   test("renders Mermaid flowcharts as terminal diagrams", () => {
     const preview = renderMermaidPreview("graph LR\nA[Start] --> B[Done]", 78);
     expect(preview.reason).toBeUndefined();

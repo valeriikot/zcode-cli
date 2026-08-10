@@ -151,3 +151,9 @@ including the locked runtime build, TypeScript and unit tests, PTY scenarios,
 the reviewed npm tarball and an isolated installed-package smoke test. A newer
 commit to the same pull request or branch automatically cancels its superseded
 CI run; unrelated pull requests continue independently.
+
+The metadata step also confirms that `package.json` needs no npm normalization.
+It runs `npm pkg fix` and fails if that rewrote the file, because `npm pkg fix`
+offers no check mode: `--dry-run` reports the fixes it would apply but exits 0
+and writes nothing, so a following `git diff` cannot observe them. Commit the
+normalized metadata when this step fails.

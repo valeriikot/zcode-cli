@@ -38,6 +38,7 @@ defaults. Choose one of the three model-access paths in
 - [Features](#features)
 - [Workspace integration](#workspace-integration)
 - [Plugin management](#plugin-management)
+- [Remote devices](#remote-devices)
 - [Requirements](#requirements)
 - [Configuration](#configuration)
 - [Local development](#local-development)
@@ -337,6 +338,55 @@ Chrome/Chromium binary; it does not make the browser headful or persistent.
 For general fact finding, avoid forcing Browser Use when a search capability is
 available. Use direct page URLs where possible, and use the Desktop in-app
 browser for interactive login or verification flows.
+
+## Remote devices
+
+The CLI can pair with a ZCode Desktop instance over the same relay protocol the
+official web remote control uses, which lets one machine reach a desktop
+session running elsewhere. This is an independent reimplementation of that
+protocol; it is not affiliated with or derived from the official client.
+
+Generate the pairing URL on the desktop under **Remote control**, then register
+it. The URL carries the desktop's device credentials, so prefer `--url-file`,
+which keeps it out of your shell history and out of the process argument list:
+
+```bash
+printf '%s\n' 'https://zcode.z.ai/remote/v4?sid=...' > ./remote-url.txt
+zcode remote add --url-file ./remote-url.txt --name laptop
+rm ./remote-url.txt
+```
+
+`zcode remote add <url>` accepts the URL directly when that trade-off is
+acceptable. A URL file may contain `#` comments and blank lines; the first
+remaining line is used.
+
+Manage and verify registered devices:
+
+```bash
+zcode remote list
+zcode remote connect laptop
+zcode remote connect laptop --workspace <key> --timeout 120
+zcode remote remove laptop --yes
+```
+
+`connect` performs the relay handshake, completes the pairing proof, and reports
+the desktop version and its available workspaces; it exits non-zero when pairing
+does not complete, so it is usable as a reachability check. The device name may
+be omitted when exactly one device is registered. `--timeout` accepts 5 to 600
+seconds and defaults to 60. Every command accepts `--json` for structured
+output, and `remove` prompts unless `--yes` is passed.
+
+Removing a device deletes only the local credential. The desktop pairing stays
+valid until it is regenerated there, which is also how a leaked URL is revoked.
+
+Device records live beside the configuration in
+`~/.zcode/cli/remote-devices.json` with owner-only permissions. Credentials are
+redacted from all command output and error messages.
+
+This release covers pairing, device management and the transport layer.
+Driving a full interactive conversation over a remote connection is not
+implemented yet, so `zcode remote connect` verifies and inspects a device
+rather than opening a remote session.
 
 ## Requirements
 

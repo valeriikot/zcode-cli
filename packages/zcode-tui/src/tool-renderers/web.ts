@@ -60,14 +60,16 @@ export function webFetchRender(options: SpecializedToolRenderOptions): Specializ
 
 export function webSearchRender(options: SpecializedToolRenderOptions): SpecializedToolRenderResult {
   const record = nestedRecord(options.result);
-  const results = Array.isArray(record?.results) ? record.results.length : 0;
+  // A search in flight has no result list yet, and "0 results" would read as an
+  // answered search that found nothing.
+  const results = Array.isArray(record?.results) ? record.results.length : undefined;
   const sources = Array.isArray(record?.sources) ? record.sources.length : 0;
   const requests = numberField(record, ["webSearchRequests", "searchCount"]);
   const duration = numberField(record, ["durationMs", "duration"]);
   const summaryText = recordString(record, ["summary"]);
   const rows = linkRows(record);
   const details = [
-    `${results} ${results === 1 ? "result" : "results"}`,
+    results !== undefined ? `${results} ${results === 1 ? "result" : "results"}` : undefined,
     sources > 0 ? `${sources} ${sources === 1 ? "source" : "sources"}` : undefined,
     requests !== undefined ? `${requests} ${requests === 1 ? "search" : "searches"}` : undefined,
     formatElapsed(duration)
@@ -76,7 +78,10 @@ export function webSearchRender(options: SpecializedToolRenderOptions): Speciali
   return {
     displayName: "Web search",
     summary: toolSummary(options.name, options.input),
-    body: [options.theme.muted(`└ ${details}`), options.expanded && expanded ? expanded : undefined].filter(Boolean).join("\n"),
+    body: [
+      details && options.theme.muted(`└ ${details}`),
+      options.expanded && expanded ? expanded : undefined
+    ].filter(Boolean).join("\n") || undefined,
     consumesResult: Boolean(record),
     hiddenContent: Boolean(expanded) && !options.expanded
   };

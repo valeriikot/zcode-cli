@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   chooseArtifact,
+  commitRuntimeSwap,
   manifestUrl,
   parseArgs,
   parseRuntimeLock,
@@ -52,6 +57,41 @@ describe("runtime synchronization", () => {
     expect(compareReleaseVersions("3.3.5-12", "3.4.0-1")).toBe(-1);
     expect(compareReleaseVersions("3.3.5-12", "3.3.5-12")).toBe(0);
     expect(() => syncedReleaseVersion("3.4", "3.3.5-12")).toThrow(/Unsupported/);
+  });
+
+  test("swaps the runtime before writing metadata and rolls back a failed swap", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "zcode-cli-swap-"));
+    try {
+      const vendor = join(workspace, "vendor");
+      const staging = join(workspace, ".vendor-next", "sync-1");
+      const packagePath = join(workspace, "package.json");
+      const previousVendor = join(staging, "previous");
+      const nextVendor = join(staging, "vendor");
+      await mkdir(nextVendor, { recursive: true });
+      await mkdir(vendor, { recursive: true });
+      await writeFile(join(nextVendor, "extraction.json"), "next");
+      await writeFile(join(vendor, "extraction.json"), "current");
+      await writeFile(packagePath, "{\"version\":\"3.7.3-10\"}\n");
+      const metadata = [{ contents: "{\"version\":\"3.7.4-1\"}\n", path: packagePath }];
+
+      await commitRuntimeSwap({ metadata, nextVendor, previousVendor, vendor });
+      expect(await readFile(join(vendor, "extraction.json"), "utf8")).toBe("next");
+      expect(await readFile(packagePath, "utf8")).toBe("{\"version\":\"3.7.4-1\"}\n");
+      expect(existsSync(previousVendor)).toBe(false);
+      expect(existsSync(nextVendor)).toBe(false);
+
+      // A swap that cannot complete must leave both the runtime and its metadata untouched.
+      await expect(commitRuntimeSwap({
+        metadata: [{ contents: "{\"version\":\"3.7.5-1\"}\n", path: packagePath }],
+        nextVendor: join(staging, "missing"),
+        previousVendor,
+        vendor
+      })).rejects.toThrow();
+      expect(await readFile(join(vendor, "extraction.json"), "utf8")).toBe("next");
+      expect(await readFile(packagePath, "utf8")).toBe("{\"version\":\"3.7.4-1\"}\n");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 
   test("parseArgs uses the CI-safe Linux default", () => {

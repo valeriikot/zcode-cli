@@ -193,6 +193,34 @@ older generated file still contains `600000`. Retryable timeouts, dropped
 streams, rate limits and server/network errors are retried and shown in the
 TUI. Authentication and invalid-request responses remain non-retryable.
 
+## Remote device store
+
+Devices registered with `zcode remote add` are stored separately from
+`config.json`, in `remote-devices.json` in the same directory:
+`~/.zcode/cli/remote-devices.json` on macOS and Linux, or
+`%USERPROFILE%\.zcode\cli\remote-devices.json` on Windows. The directory is
+created with owner-only permissions when it is missing, and the store is written
+through a private temporary file so a concurrent read never observes a partial
+record.
+
+Each record holds the desktop's pairing credential, which is equivalent to an
+access token for that device. The file is therefore written with POSIX mode
+`0600`, and every code path that reports a device redacts the credential before
+it reaches output, logs or error messages. Treat the file itself as a secret:
+exclude it from backups and dotfile repositories that are not private.
+
+Registering a device with `zcode remote add <url>` places the credential in the
+shell history and the process argument list. Prefer `--url-file`, and delete the
+file afterwards:
+
+```bash
+zcode remote add --url-file ./remote-url.txt --name laptop
+```
+
+`zcode remote remove` deletes only the local record. The desktop pairing remains
+valid until it is regenerated under **Remote control** on that desktop, which is
+the only way to revoke a credential that has leaked.
+
 ## Theme
 
 Set `ui.theme` to `"auto"` (terminal detection), `"dark"`, or `"light"` in the

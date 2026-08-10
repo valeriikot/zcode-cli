@@ -237,6 +237,20 @@ describe("ZCode event adapter", () => {
     });
   });
 
+  test("reports only the progress fields an event actually carries", () => {
+    const started = normalizeEvent({
+      type: "tool_call_started",
+      payload: { toolCallId: "call_1", toolName: "Bash", pid: 4_242, description: "bun test" }
+    });
+    expect(started?.progress).toStrictEqual({ pid: 4_242, description: "bun test" });
+
+    const closed = normalizeEvent({
+      type: "tool_call_closed",
+      payload: { toolCallId: "call_1" }
+    });
+    expect(closed?.progress).toStrictEqual({});
+  });
+
   test("normalizes subagent lifecycle metadata for the parent tool card", () => {
     expect(normalizeEvent({
       type: "subagent_stopped",

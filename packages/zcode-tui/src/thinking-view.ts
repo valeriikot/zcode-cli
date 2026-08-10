@@ -4,11 +4,15 @@ import {
   Text
 } from "@earendil-works/pi-tui";
 
+import { BoundedToolText } from "./bounded-tool-text.ts";
 import type { ZCodeTheme } from "./theme.ts";
 import { sanitizeTerminalText } from "./terminal-text.ts";
 
 export class ThinkingView extends Box {
-  private text = "";
+  // Reasoning streams are bounded like tool output: the whole text is re-parsed as
+  // Markdown on every dirty frame and every card keeps its text for the session.
+  private readonly text = new BoundedToolText();
+  private blank = true;
   private completed = false;
   private expanded = false;
   private dirty = false;
@@ -19,14 +23,17 @@ export class ThinkingView extends Box {
 
   append(delta: string): void {
     if (!delta) return;
-    this.text += sanitizeTerminalText(delta, { preserveSgr: false });
+    const sanitized = sanitizeTerminalText(delta, { preserveSgr: false });
+    this.text.append(sanitized);
+    if (this.blank && sanitized.trim()) this.blank = false;
     this.dirty = true;
   }
 
   setText(text: string): void {
     const sanitized = sanitizeTerminalText(text, { preserveSgr: false });
-    if (this.text === sanitized) return;
-    this.text = sanitized;
+    if (this.text.totalCharacters === sanitized.length && this.text.value() === sanitized) return;
+    this.text.replace(sanitized);
+    this.blank = !sanitized.trim();
     this.dirty = true;
   }
 
@@ -47,11 +54,11 @@ export class ThinkingView extends Box {
   }
 
   hasHiddenContent(): boolean {
-    return this.completed && Boolean(this.text.trim()) && !this.expanded;
+    return this.completed && !this.blank && !this.expanded;
   }
 
   getSearchText(): string {
-    return this.text;
+    return this.text.value();
   }
 
   override render(width: number): string[] {
@@ -65,12 +72,12 @@ export class ThinkingView extends Box {
   private rebuild(): void {
     this.clear();
     const title = this.completed
-      ? `${this.theme.muted("◇")} ${this.theme.bold("Thought")}${this.text.trim() && !this.expanded ? this.theme.muted(" · Ctrl+O to expand") : ""}`
+      ? `${this.theme.muted("◇")} ${this.theme.bold("Thought")}${!this.blank && !this.expanded ? this.theme.muted(" · Ctrl+O to expand") : ""}`
       : `${this.theme.accent("◇")} ${this.theme.bold("Thinking")} ${this.theme.muted("· active")}`;
     this.addChild(new Text(title, 0, 0));
-    if (this.text.trim() && (!this.completed || this.expanded)) {
+    if (!this.blank && (!this.completed || this.expanded)) {
       this.addChild(new Markdown(
-        this.text,
+        this.text.value(),
         1,
         0,
         this.theme.markdown,

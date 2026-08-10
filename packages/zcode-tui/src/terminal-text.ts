@@ -13,6 +13,18 @@ function isFinalByte(value: string | undefined): boolean {
   return code >= 0x40 && code <= 0x7e;
 }
 
+function isEscapeIntermediateByte(value: string | undefined): boolean {
+  if (!value) return false;
+  const code = value.charCodeAt(0);
+  return code >= 0x20 && code <= 0x2f;
+}
+
+function isEscapeFinalByte(value: string | undefined): boolean {
+  if (!value) return false;
+  const code = value.charCodeAt(0);
+  return code >= 0x30 && code <= 0x7e;
+}
+
 function safeSgr(sequence: string): boolean {
   return /^\x1b\[[0-9:;]*m$/u.test(sequence);
 }
@@ -34,7 +46,7 @@ export interface SanitizeTerminalTextOptions {
   preserveSgr?: boolean;
 }
 
-type SanitizerState = "text" | "escape" | "csi" | "string" | "string-escape";
+type SanitizerState = "text" | "escape" | "escape-intermediate" | "csi" | "string" | "string-escape";
 
 /**
  * Incrementally strips terminal control sequences without leaking a sequence
@@ -88,7 +100,27 @@ export class StreamingTerminalTextSanitizer {
           index += 1;
           continue;
         }
+        // Charset designations and other nF forms (ESC ( B, ESC # 8) carry their
+        // payload after an intermediate byte; the remaining Fp/Fs/Fe forms
+        // (ESC 7, ESC 8, ESC c, ESC M) end on this byte. Leaving either
+        // unconsumed would print the payload as visible text.
+        if (isEscapeIntermediateByte(character)) {
+          this.state = "escape-intermediate";
+          index += 1;
+          continue;
+        }
         this.state = "text";
+        if (isEscapeFinalByte(character)) index += 1;
+        continue;
+      }
+
+      if (this.state === "escape-intermediate") {
+        if (isEscapeIntermediateByte(character)) {
+          index += 1;
+          continue;
+        }
+        this.state = "text";
+        if (isEscapeFinalByte(character)) index += 1;
         continue;
       }
 

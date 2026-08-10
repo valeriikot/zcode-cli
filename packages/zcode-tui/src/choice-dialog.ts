@@ -26,6 +26,36 @@ export interface ChoiceItem extends SelectItem {
   preview?: Component;
 }
 
+interface DialogGeometry {
+  maxContentLines: number;
+  maxExpandedContentLines: number;
+  maxVisible: number;
+}
+
+function dialogGeometry(rows: number, itemCount: number, hasDetails: boolean): DialogGeometry {
+  const maxVisible = Math.max(1, Math.min(
+    8,
+    itemCount,
+    Math.floor(Math.max(2, rows - 8) / (hasDetails ? 2 : 1))
+  ));
+  const maxContentLines = Math.max(0, rows - maxVisible - 9);
+  return {
+    maxContentLines,
+    maxExpandedContentLines: Math.max(2, maxContentLines, rows - 8),
+    maxVisible
+  };
+}
+
+class ChoiceList extends SelectList {
+  /**
+   * pi-tui fixes the visible window at construction, so the dialog resizes it from
+   * its own render instead of freezing the height the terminal had at open time.
+   */
+  setMaxVisible(maxVisible: number): void {
+    (this as unknown as { maxVisible: number }).maxVisible = maxVisible;
+  }
+}
+
 class ChoiceItemDetails implements Component {
   constructor(
     private readonly item: ChoiceItem,
@@ -61,12 +91,11 @@ class ChoiceDialog implements Component {
     private readonly title: string,
     private readonly prompt: string,
     private readonly help: string,
-    private readonly list: SelectList,
+    private readonly list: ChoiceList,
     private readonly theme: ZCodeTheme,
+    private readonly geometry: () => DialogGeometry,
     private readonly content?: Component,
-    private readonly contentLabel = "Details",
-    private readonly maxContentLines = 0,
-    private readonly maxExpandedContentLines = 0
+    private readonly contentLabel = "Details"
   ) {}
 
   setSelectionPreview(preview: Component | undefined): void {
@@ -76,6 +105,10 @@ class ChoiceDialog implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
+    // Heights follow the terminal on every frame, so a resize while the dialog is
+    // open neither overflows the screen nor keeps a stale cramped viewport.
+    const geometry = this.geometry();
+    this.list.setMaxVisible(geometry.maxVisible);
     const windowedContent = this.content && !this.selectionPreview && isWindowedComponent(this.content)
       ? this.content
       : undefined;
@@ -89,7 +122,7 @@ class ChoiceDialog implements Component {
       : content?.length ?? 0;
     const visibleContent = this.renderContentViewport(
       totalContentLines,
-      this.contentExpanded ? this.maxExpandedContentLines : this.maxContentLines,
+      this.contentExpanded ? geometry.maxExpandedContentLines : geometry.maxContentLines,
       safeWidth,
       (start, count) => windowedContent
         ? windowedContent.renderWindow(safeWidth, start, count).lines
@@ -292,15 +325,13 @@ export function choose(
       || options.showSelectedItemDetails
       || options.items.some((item) => item.preview)
     );
-    const maxVisible = Math.max(1, Math.min(
-      8,
+    const geometry = (): DialogGeometry => dialogGeometry(
+      ui.terminal.rows,
       searchableItems.length,
-      Math.floor(Math.max(2, ui.terminal.rows - 8) / (hasDetails ? 2 : 1))
-    ));
-    const list = new SelectList(searchableItems, maxVisible, theme.select);
+      hasDetails
+    );
+    const list = new ChoiceList(searchableItems, geometry().maxVisible, theme.select);
     list.setSelectedIndex(options.selectedIndex ?? 0);
-    const maxContentLines = Math.max(0, ui.terminal.rows - maxVisible - 9);
-    const maxExpandedContentLines = Math.max(2, maxContentLines, ui.terminal.rows - 8);
     const dialog = new ChoiceDialog(
       sanitizeTerminalText(options.title, { preserveSgr: false }),
       sanitizeTerminalText(options.prompt, { preserveSgr: false }),
@@ -312,10 +343,9 @@ export function choose(
       ),
       list,
       theme,
+      geometry,
       options.content,
-      sanitizeTerminalText(options.contentLabel ?? "Details", { preserveSgr: false }),
-      maxContentLines,
-      maxExpandedContentLines
+      sanitizeTerminalText(options.contentLabel ?? "Details", { preserveSgr: false })
     );
     const previewFor = (item: SelectItem | null): Component | undefined => {
       if (!item) return undefined;
@@ -371,6 +401,25 @@ class TextPromptDialog implements Component {
   }
 }
 
+/**
+ * One asterisk per user-perceived character, padded back to the value's code unit
+ * length: masking by length alone renders extra asterisks for emoji and combining
+ * sequences, while a shorter mask makes Input.setValue() clamp the cursor into the
+ * middle of a grapheme and corrupt the next keystroke.
+ */
+function maskedValue(value: string): string {
+  // Printable ASCII always maps one code unit per grapheme; the fallback below
+  // re-segments the remainder on each step.
+  if (!/[^\x20-\x7e]/u.test(value)) return "*".repeat(value.length);
+  let remaining = value;
+  let graphemes = 0;
+  while (remaining) {
+    remaining = removeLastGrapheme(remaining);
+    graphemes += 1;
+  }
+  return `${"*".repeat(graphemes)}${" ".repeat(value.length - graphemes)}`;
+}
+
 class PromptInput extends Input {
   constructor(
     private readonly mask: boolean,
@@ -383,7 +432,7 @@ class PromptInput extends Input {
   override render(width: number): string[] {
     const value = this.getValue();
     if (this.mask && value) {
-      this.setValue("*".repeat(value.length));
+      this.setValue(maskedValue(value));
       try {
         return super.render(width);
       } finally {

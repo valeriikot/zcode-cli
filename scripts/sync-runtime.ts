@@ -57,6 +57,13 @@ export interface RuntimeManifestResolution {
   url: string;
 }
 
+export interface RuntimeCommit {
+  metadata: { contents: string; path: string }[];
+  nextVendor: string;
+  previousVendor: string;
+  vendor: string;
+}
+
 type ManifestFetcher = (url: string, init?: RequestInit) => Promise<string>;
 
 export function parseArgs(argv: string[]): SyncOptions {
@@ -726,12 +733,32 @@ async function resolveSource(options: SyncOptions, temporaryDirectory: string): 
   return resolveLockedSource(lock, temporaryDirectory);
 }
 
+export async function commitRuntimeSwap(commit: RuntimeCommit): Promise<void> {
+  const hadVendor = existsSync(commit.vendor);
+  if (hadVendor) await rename(commit.vendor, commit.previousVendor);
+  try {
+    await rename(commit.nextVendor, commit.vendor);
+  } catch (error) {
+    // Restore the previous runtime so a failed swap never leaves the checkout without vendor/.
+    if (hadVendor) await rename(commit.previousVendor, commit.vendor);
+    throw error;
+  }
+  if (hadVendor) await rm(commit.previousVendor, { recursive: true, force: true });
+  // Metadata lands only once the runtime is in place; an advanced package.json or lock with no
+  // matching vendor/ is exactly what CI's `git diff --exit-code` misreports.
+  for (const file of commit.metadata) await writeFile(file.path, file.contents);
+}
+
 async function sync(options: SyncOptions): Promise<void> {
   const temporaryDirectory = await mkdtemp(join(tmpdir(), "zcode-cli-sync-"));
-  const nextVendor = join(root, ".vendor-next");
+  // Staging stays inside the repository so the swap is a same-filesystem rename, and it is unique
+  // per process so a concurrent sync cannot delete staging it does not own.
+  const stagingRoot = join(root, ".vendor-next");
+  await mkdir(stagingRoot, { recursive: true });
+  const staging = await mkdtemp(join(stagingRoot, "sync-"));
+  const nextVendor = join(staging, "vendor");
   try {
     const source = await resolveSource(options, temporaryDirectory);
-    await rm(nextVendor, { recursive: true, force: true });
     await cp(source.glm, nextVendor, { recursive: true });
     await installTuiBridge(nextVendor);
     await installLocalTui(nextVendor);
@@ -754,15 +781,23 @@ async function sync(options: SyncOptions): Promise<void> {
     const packageJson = JSON.parse(await readFile(packagePath, "utf8")) as Record<string, unknown>;
     const packageVersion = syncedReleaseVersion(source.appVersion, String(packageJson.version ?? ""));
     packageJson.version = packageVersion;
-    await writeFile(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const metadata = [{ contents: `${JSON.stringify(packageJson, null, 2)}\n`, path: packagePath }];
     if (source.lock) {
-      await writeFile(join(root, "zcode-runtime.lock.json"), `${JSON.stringify(source.lock, null, 2)}\n`);
+      metadata.push({
+        contents: `${JSON.stringify(source.lock, null, 2)}\n`,
+        path: join(root, "zcode-runtime.lock.json")
+      });
     }
-    await rm(join(root, "vendor"), { recursive: true, force: true });
-    await rename(nextVendor, join(root, "vendor"));
+
+    await commitRuntimeSwap({
+      metadata,
+      nextVendor,
+      previousVendor: join(staging, "previous"),
+      vendor: join(root, "vendor")
+    });
     console.log(`Prepared ${String(packageJson.name)}@${packageVersion} with ${cliVersion}.`);
   } finally {
-    await rm(nextVendor, { recursive: true, force: true });
+    await rm(staging, { recursive: true, force: true });
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }

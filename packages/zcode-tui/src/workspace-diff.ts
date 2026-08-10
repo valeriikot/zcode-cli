@@ -4,7 +4,7 @@ import { parsePatch } from "diff";
 import { resolve, sep } from "node:path";
 import type { Readable } from "node:stream";
 
-import type { FileDiffData, FileDiffHunk } from "./file-diff-view.ts";
+import { countChanges, type FileDiffData, type FileDiffHunk } from "./file-diff-view.ts";
 
 const maxPatchBytes = 5 * 1024 * 1024;
 const maxStatusBytes = 1024 * 1024;
@@ -85,18 +85,6 @@ async function git(workspaceDirectory: string, args: string[], maximum: number):
 function cleanGitPath(path: string | undefined): string | undefined {
   if (!path || path === "/dev/null") return undefined;
   return path.replace(/^[ab]\//u, "");
-}
-
-function countChanges(hunks: FileDiffHunk[]): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const hunk of hunks) {
-    for (const line of hunk.lines) {
-      if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
-      if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
-    }
-  }
-  return { additions, deletions };
 }
 
 function statusFiles(value: string): Map<string, { code: string; oldPath?: string }> {

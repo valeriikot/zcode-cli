@@ -16,10 +16,10 @@ interface AssistantSegment {
 }
 
 export class AssistantStream {
-  private current?: RichMarkdown;
-  private currentText = "";
+  private current?: AssistantSegment;
   private currentPartId?: string;
-  private streamedText = "";
+  private displayedText = "";
+  private readonly segments: AssistantSegment[] = [];
   private readonly partSegments = new Map<string, AssistantSegment>();
 
   constructor(
@@ -28,16 +28,12 @@ export class AssistantStream {
   ) {}
 
   beginTurn(): void {
-    const current = this.current;
-    current?.finishText();
-    for (const segment of this.partSegments.values()) {
-      if (segment.view !== current) segment.view.finishText();
-    }
+    for (const segment of this.segments) segment.view.finishText();
+    this.segments.length = 0;
     this.partSegments.clear();
     this.current = undefined;
-    this.currentText = "";
     this.currentPartId = undefined;
-    this.streamedText = "";
+    this.displayedText = "";
   }
 
   clear(): void {
@@ -45,32 +41,23 @@ export class AssistantStream {
   }
 
   breakSegment(): void {
-    this.current?.finishText();
+    this.current?.view.finishText();
     this.current = undefined;
-    this.currentText = "";
     this.currentPartId = undefined;
   }
 
   append(delta: string, partId?: string, messageId?: string): string {
-    if (!delta) return this.streamedText;
-    if (partId) {
-      const segment = this.ensurePartSegment(partId, messageId);
-      segment.text += delta;
-      segment.view.appendText(delta);
-      this.current = segment.view;
-      this.currentText = segment.text;
-      this.currentPartId = partId;
-    } else {
-      if (!this.current || this.currentPartId) {
-        this.current = new RichMarkdown("", 1, this.theme);
-        this.addBlock(this.current, { kind: "assistant", messageId });
-        this.currentPartId = undefined;
-      }
-      this.currentText += delta;
-      this.current.appendText(delta);
-    }
-    this.streamedText += delta;
-    return this.streamedText;
+    if (!delta) return this.displayedText;
+    const segment = partId
+      ? this.ensurePartSegment(partId, messageId)
+      : this.ensureAnonymousSegment(messageId);
+    segment.text += delta;
+    segment.view.appendText(delta);
+    this.current = segment;
+    this.currentPartId = partId;
+    if (segment === this.segments.at(-1)) this.displayedText += delta;
+    else this.rebuildDisplayedText();
+    return this.displayedText;
   }
 
   upsert(text: string, partId: string, messageId?: string): string {
@@ -78,16 +65,17 @@ export class AssistantStream {
     const previous = segment.text;
     segment.text = text;
     segment.view.setText(text);
-    this.current = segment.view;
-    this.currentText = text;
+    this.current = segment;
     this.currentPartId = partId;
 
-    if (text.startsWith(previous)) {
-      this.streamedText += text.slice(previous.length);
-    } else if (previous && this.streamedText.endsWith(previous)) {
-      this.streamedText = `${this.streamedText.slice(0, -previous.length)}${text}`;
+    // A rewrite of anything but the last segment's tail moves earlier text, so
+    // only a rebuild keeps the accumulator equal to what the transcript shows.
+    if (segment === this.segments.at(-1) && text.startsWith(previous)) {
+      this.displayedText += text.slice(previous.length);
+    } else {
+      this.rebuildDisplayedText();
     }
-    return this.streamedText;
+    return this.displayedText;
   }
 
   removePart(partId: string): void {
@@ -95,18 +83,21 @@ export class AssistantStream {
     if (!segment) return;
     segment.view.finishText();
     this.partSegments.delete(partId);
+    const index = this.segments.indexOf(segment);
+    if (index >= 0) this.segments.splice(index, 1);
+    this.rebuildDisplayedText();
     if (this.currentPartId === partId) this.breakSegment();
   }
 
   reconcile(response: string): string {
-    if (!this.streamedText) {
+    if (!this.displayedText) {
       this.append(response);
       return response;
     }
 
-    if (response.startsWith(this.streamedText)) {
-      this.append(response.slice(this.streamedText.length));
-    } else if (!this.streamedText.endsWith(response)) {
+    if (response.startsWith(this.displayedText)) {
+      this.append(response.slice(this.displayedText.length));
+    } else if (!this.displayedText.endsWith(response)) {
       // Some runtimes return only the final assistant message after streaming
       // commentary around tools. Keep that authoritative response at the end.
       this.breakSegment();
@@ -115,12 +106,27 @@ export class AssistantStream {
     return response;
   }
 
+  private rebuildDisplayedText(): void {
+    this.displayedText = this.segments.map((segment) => segment.text).join("");
+  }
+
+  private ensureAnonymousSegment(messageId?: string): AssistantSegment {
+    const current = this.current;
+    if (current && !this.currentPartId) return current;
+    const view = new RichMarkdown("", 1, this.theme);
+    const segment = { view, text: "", messageId };
+    this.segments.push(segment);
+    this.addBlock(view, { kind: "assistant", messageId });
+    return segment;
+  }
+
   private ensurePartSegment(partId: string, messageId?: string): AssistantSegment {
     const existing = this.partSegments.get(partId);
     if (existing) return existing;
     const view = new RichMarkdown("", 1, this.theme);
     const segment = { view, text: "", messageId };
     this.partSegments.set(partId, segment);
+    this.segments.push(segment);
     this.addBlock(view, { id: partId, kind: "assistant", messageId });
     return segment;
   }

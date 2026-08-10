@@ -55,23 +55,22 @@ interface ToolImage {
   mimeType: string;
 }
 
+// Both bounds apply on every path: sixteen lines of unbounded length still wrap
+// into hundreds of transcript rows inside a collapsed card.
 function truncate(value: string, expanded: boolean): { text: string; truncated: boolean } {
   const normalized = value.replace(/\r/g, "");
   if (expanded) return { text: normalized, truncated: false };
   const lines = normalized.split("\n");
-  if (lines.length > maxPreviewLines) {
-    const visible = lines.slice(0, maxPreviewLines).join("\n");
-    return {
-      text: `${visible}\n… ${lines.length - maxPreviewLines} more lines · Ctrl+O to expand`,
-      truncated: true
-    };
-  }
-  const visible = truncateGraphemes(normalized, maxPreviewGraphemes, "");
-  if (visible === normalized) return { text: normalized, truncated: false };
-  return {
-    text: `${visible}\n… output truncated · Ctrl+O to expand`,
-    truncated: true
-  };
+  const hiddenLines = Math.max(0, lines.length - maxPreviewLines);
+  const visible = hiddenLines > 0 ? lines.slice(0, maxPreviewLines).join("\n") : normalized;
+  const capped = truncateGraphemes(visible, maxPreviewGraphemes, "");
+  if (hiddenLines === 0 && capped === visible) return { text: normalized, truncated: false };
+  const notice = [
+    capped === visible ? undefined : "output truncated",
+    hiddenLines > 0 ? `${hiddenLines} more lines` : undefined,
+    "Ctrl+O to expand"
+  ].filter(Boolean).join(" · ");
+  return { text: `${capped}\n… ${notice}`, truncated: true };
 }
 
 function jsonReplacer(key: string, value: unknown): unknown {

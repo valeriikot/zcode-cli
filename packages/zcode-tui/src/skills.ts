@@ -5,7 +5,9 @@ const skillCacheMilliseconds = 2_000;
 const skillDescriptionLimit = 140;
 const skillIdentifierLimit = 256;
 const skillIdentifierPattern = /^[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)*$/u;
-const skillMentionPattern = /(^|\s)\$([A-Za-z0-9._:-]+)/gu;
+// A mention must end on a name character so sentence punctuation ("run $review.")
+// stays out of the token while interior separators keep working ("$plugin:skill").
+const skillMentionPattern = /(^|\s)\$([A-Za-z0-9._:-]*[A-Za-z0-9_])/gu;
 
 export interface SkillEntry {
   description?: string;

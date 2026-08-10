@@ -29,14 +29,23 @@ function sanitizedJson(value: unknown): string | undefined {
   }
 }
 
+/**
+ * Bounds the untrusted request payload by characters and by lines on every path:
+ * the dialog re-materializes its content on each keystroke, so the character cap
+ * is applied first and keeps that work proportional to the cap, not to the input.
+ */
 function limited(value: string): string {
-  const normalized = value.replace(/\r/g, "");
-  const lines = normalized.split("\n");
-  if (lines.length > maxInputLines) return `${lines.slice(0, maxInputLines).join("\n")}\n… ${lines.length - maxInputLines} more lines`;
-  return truncateGraphemes(normalized, maxInputCharacters);
+  const capped = truncateGraphemes(value, maxInputCharacters, "");
+  const lines = capped.replace(/\r/g, "").split("\n");
+  const visible = lines.slice(0, maxInputLines).join("\n");
+  if (capped === value && lines.length <= maxInputLines) return visible;
+  const marker = capped === value ? `${lines.length - maxInputLines} more lines` : "input truncated";
+  return `${visible}\n… ${marker}`;
 }
 
 export class PermissionPreview implements Component {
+  private cache?: { lines: string[]; width: number };
+
   constructor(
     private readonly theme: ZCodeTheme,
     private readonly toolName: string,
@@ -44,9 +53,20 @@ export class PermissionPreview implements Component {
     private readonly riskLevel?: string
   ) {}
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.cache = undefined;
+  }
 
+  // The request is immutable, so the dialog's per-keystroke re-render reuses the
+  // lines instead of reformatting the payload for every frame.
   render(width: number): string[] {
+    if (this.cache?.width === width) return this.cache.lines;
+    const lines = this.build(width);
+    this.cache = { lines, width };
+    return lines;
+  }
+
+  private build(width: number): string[] {
     const host = new Box(1, 0, this.riskBackground());
     const risk = this.riskLevel ? this.riskStyle()(`Risk: ${this.riskLevel}`) : undefined;
     if (risk) host.addChild(new Text(risk, 0, 0));

@@ -53,6 +53,26 @@ describe("explicit skill invocation", () => {
     expect(resolveSkillMentions("$documents:docx", skills)).toEqual(["documents:docx"]);
   });
 
+  test("keeps sentence punctuation out of the mention token", () => {
+    const skills = normalizeSkillEntries({
+      skills: [
+        { name: "review" },
+        { name: "control-browser", qualifiedName: "browser-use:control-browser" },
+        { name: "my.skill" }
+      ]
+    });
+
+    expect(resolveSkillMentions("Please run $review.", skills)).toEqual(["review"]);
+    expect(resolveSkillMentions("Run $review: the diff", skills)).toEqual(["review"]);
+    expect(resolveSkillMentions("Run $review, then stop.", skills)).toEqual(["review"]);
+    expect(resolveSkillMentions("Run $review...", skills)).toEqual(["review"]);
+    expect(resolveSkillMentions("Run $review", skills)).toEqual(["review"]);
+    expect(resolveSkillMentions("Use $browser-use:control-browser.", skills))
+      .toEqual(["browser-use:control-browser"]);
+    expect(resolveSkillMentions("Use $my.skill.", skills)).toEqual(["my.skill"]);
+    expect(resolveSkillMentions("Costs $5. Also $. and $-", skills)).toEqual([]);
+  });
+
   test("shares a short-lived discovery result between autocomplete and submission", async () => {
     let calls = 0;
     const catalog = new SkillCatalog(async () => {

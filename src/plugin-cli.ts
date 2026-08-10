@@ -78,8 +78,8 @@ type PluginSpecificOption = "dryRun" | "marketplace" | "optionsFile" | "scope" |
 const leadingBooleanOptions = new Set(["--json", "--no-color", "--verbose"]);
 const leadingValueOptions = new Set(["--cwd", "--locale"]);
 
-function managedAction(args: string[]): string | undefined {
-  let index = 0;
+function skipGlobalOptions(args: string[], from: number): number {
+  let index = from;
   while (index < args.length) {
     const argument = args[index]!;
     if (leadingBooleanOptions.has(argument)) {
@@ -96,8 +96,13 @@ function managedAction(args: string[]): string | undefined {
     }
     break;
   }
+  return index;
+}
+
+function managedAction(args: string[]): string | undefined {
+  const index = skipGlobalOptions(args, 0);
   if (args[index] !== "plugins") return undefined;
-  const action = args[index + 1];
+  const action = args[skipGlobalOptions(args, index + 1)];
   if ((!action || action.startsWith("-")) && args.includes("--help")) return "help";
   return action && managedActions.has(action) ? action : undefined;
 }

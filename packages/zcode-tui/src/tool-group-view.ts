@@ -83,6 +83,8 @@ export class ToolGroupView implements Component {
       this.theme.muted("Ctrl+O to expand")
     ].filter(Boolean).join(" · ");
     const line = `${icon} ${parts.join(", ")}${active ? "…" : ""} · ${suffix}`;
-    return new Text(truncateToWidth(line, Math.max(1, width)), 1, 0).render(width);
+    // Text pads one column on each side and word-wraps the remainder, so the
+    // summary is cut to that content width to stay a single collapsed row.
+    return new Text(truncateToWidth(line, Math.max(1, width - 2)), 1, 0).render(width);
   }
 }

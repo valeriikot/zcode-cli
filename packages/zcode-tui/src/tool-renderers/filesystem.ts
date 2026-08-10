@@ -37,13 +37,23 @@ export function readRender(options: SpecializedToolRenderOptions): SpecializedTo
   };
 }
 
+// Each counted field carries its own noun so the reported number and the label
+// always describe the same thing.
+const searchCounts = [
+  ["numMatches", "match", "matches"],
+  ["numFiles", "file", "files"],
+  ["numLines", "line", "lines"],
+  ["count", "match", "matches"]
+] as const;
+
 export function searchRender(options: SpecializedToolRenderOptions): SpecializedToolRenderResult {
   const record = nestedRecord(options.result);
-  const amount = numberField(record, ["numMatches", "numFiles", "numLines", "count"]);
-  const label = record?.numFiles !== undefined ? "files" : record?.numLines !== undefined ? "lines" : "matches";
+  const counted = searchCounts
+    .map(([key, singular, plural]) => ({ amount: numberField(record, [key]), singular, plural }))
+    .find((entry) => entry.amount !== undefined);
   const duration = numberField(record, ["durationMs", "duration"]);
   const status = [
-    amount !== undefined ? `Found ${amount} ${amount === 1 ? label.replace(/s$/u, "") : label}` : undefined,
+    counted ? `Found ${counted.amount} ${counted.amount === 1 ? counted.singular : counted.plural}` : undefined,
     formatElapsed(duration),
     booleanField(record, ["truncated"]) ? "truncated" : undefined
   ].filter(Boolean).join(" · ");

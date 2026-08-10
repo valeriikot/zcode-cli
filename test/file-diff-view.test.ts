@@ -87,6 +87,77 @@ describe("TUI file diff view", () => {
     expect(card).not.toContain("*** Begin Patch");
   });
 
+  test("annotates the no-newline marker without numbering or shifting lines", () => {
+    const view = new FileDiffView(createTheme(true), {
+      toolName: "Edit",
+      state: "complete",
+      diffs: [{
+        filePath: "src/value.ts",
+        additions: 1,
+        deletions: 1,
+        structuredPatch: [{
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 2,
+          lines: [
+            " const first = 1;",
+            "-const value = 1;",
+            "\\ No newline at end of file",
+            "+const value = 20;",
+            " const last = 3;"
+          ]
+        }]
+      }]
+    });
+    const rendered = view.render(72).map((line) => line.replace(/\x1b\[[0-9;]*m/gu, "").trimEnd());
+
+    expect(rendered).toContain("      │  \\ No newline at end of file");
+    expect(rendered).toContain(" 1  1 │  const first = 1;");
+    expect(rendered).toContain(" 2    │- const value = 1;");
+    expect(rendered).toContain("    2 │+ const value = 20;");
+    expect(rendered).toContain(" 3  3 │  const last = 3;");
+    expect(view.render(72).join("\n")).toContain("\x1b[1;38;5;231;48;5;28m");
+  });
+
+  test("counts changed lines whose content starts with a diff marker", () => {
+    const patchText = [
+      "*** Begin Patch",
+      "*** Update File: src/flags.ts",
+      "@@ -1,1 +1,1 @@",
+      "---help removed",
+      "+++counter added",
+      "*** End Patch"
+    ].join("\n");
+    const diffs = fileDiffsForTool("ApplyPatch", { patch_text: patchText }, undefined, "running");
+    const card = fileDiffCard({ toolName: "ApplyPatch", state: "running", diffs });
+
+    expect(diffs[0]).toMatchObject({ additions: 1, deletions: 1 });
+    expect(card).toContain("● ApplyPatch src/flags.ts +1 -1");
+    expect(card).toContain("│- --help removed");
+    expect(card).toContain("│+ ++counter added");
+  });
+
+  test("keeps blank context lines inside an ApplyPatch preview", () => {
+    const patchText = [
+      "*** Begin Patch",
+      "*** Update File: src/blank.ts",
+      " const first = 1;",
+      "",
+      "-const second = 2;",
+      "+const second = 3;",
+      "*** End Patch",
+      ""
+    ].join("\n");
+    const diffs = fileDiffsForPermission("apply_patch", { patch_text: patchText });
+
+    expect(diffs[0]?.structuredPatch[0]).toMatchObject({
+      oldLines: 3,
+      newLines: 3,
+      lines: [" const first = 1;", " ", "-const second = 2;", "+const second = 3;"]
+    });
+  });
+
   test("renders successful new Write content as additions", () => {
     const card = toolCard({
       name: "Write",

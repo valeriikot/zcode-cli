@@ -46,6 +46,11 @@ jobs:
 
       - name: Verify repository and npm metadata
         run: |
-          npm pkg fix --dry-run --json
           git diff --check
           git diff --exit-code -- package.json zcode-runtime.lock.json
+          npm pkg fix
+          if ! git diff --quiet -- package.json; then
+            echo "::error::npm normalized package.json; commit the normalized metadata." >&2
+            git diff -- package.json
+            exit 1
+          fi

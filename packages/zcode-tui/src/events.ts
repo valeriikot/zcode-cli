@@ -46,6 +46,19 @@ function nestedRecord(record: UnknownRecord, key: string): UnknownRecord | undef
   return isRecord(value) ? value : undefined;
 }
 
+/**
+ * Progress fields absent from an event must stay absent: consumers merge every
+ * update onto the tool card, so a materialized `undefined` would erase metadata
+ * an earlier lifecycle event already reported.
+ */
+function reportedProgress(fields: ToolProgressData): ToolProgressData {
+  const progress: ToolProgressData = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) (progress as UnknownRecord)[key] = value;
+  }
+  return progress;
+}
+
 function runtimeToolKind(type: string | undefined): string | undefined {
   switch (type) {
     case "tool_call_scheduled": return "scheduled";
@@ -133,7 +146,7 @@ export function normalizeEvent(value: unknown): StreamEvent | null {
     errorPhase: asString(body.errorPhase),
     exceptionType: asString(body.exceptionType),
     message: asString(body.message) ?? (errorRecord && asString(errorRecord.message)),
-    progress: {
+    progress: reportedProgress({
       elapsedMs: number("elapsedMs"),
       durationMs: number("durationMs") ?? number("duration"),
       pid: number("pid"),
@@ -155,7 +168,7 @@ export function normalizeEvent(value: unknown): StreamEvent | null {
       totalTokens: number("totalTokens"),
       outputFile: asString(body.outputFile),
       backgroundTaskId: asString(body.backgroundTaskId)
-    },
+    }),
     attempt: number("attempt") ?? recordNumber(streamRecovery, "retryNumber"),
     maxAttempts: number("maxAttempts"),
     maxRetries: number("maxRetries") ?? recordNumber(streamRecovery, "maxRetries"),

@@ -85,6 +85,18 @@ Git tag and GitHub Release all describe the same release:
    npm Trusted Publishing, then creates `v<version>` and the corresponding
    GitHub Release.
 
+Preparation is itself split into two jobs, because validating a release means
+executing an upstream runtime that this repository does not control. The
+`prepare` job downloads, extracts and runs that runtime with `contents: read`
+and no ability to write to the repository, then uploads the validated
+`package.json` and `zcode-runtime.lock.json` as a run artifact. The
+`pull_request` job holds the `contents: write` and `pull-requests: write`
+permissions, checks out the original commit, downloads that artifact, verifies
+the package name and version still match what `prepare` reported, and opens the
+Release PR. The privileged job installs no dependencies and never executes the
+downloaded runtime, so a compromised upstream artifact cannot reach a
+write-scoped token.
+
 The generated `vendor/` directory remains ignored by Git and is rebuilt in both
 workflows. Its updater URL and SHA-512 are committed in
 `zcode-runtime.lock.json`. Preparation resolves the latest manifest; publishing
@@ -98,8 +110,14 @@ upstream rolls its stable channel back, synchronization keeps a newer committed
 lock instead of silently downgrading it; adopting a rollback requires an
 explicit maintainer review of `zcode-runtime.lock.json`.
 
-The preparation workflow checks upstream once per day at 01:30 in the
-`Asia/Shanghai` timezone, in `upstream` mode. [GitHub documents scheduled
+The preparation workflow checks upstream once per day in `upstream` mode, on the
+`30 17 * * *` schedule. GitHub evaluates workflow cron expressions in UTC and
+its schema accepts no timezone key, so the expression is written in UTC:
+17:30 UTC is 01:30 the following day in `Asia/Shanghai`. Changing the intended
+local time means recomputing the UTC expression by hand, including its day
+fields when the conversion crosses midnight — a `timezone` key alongside `cron`
+makes the whole workflow file invalid, which silently disables every trigger it
+declares, `workflow_dispatch` included. [GitHub documents scheduled
 triggers as best effort](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule):
 under high Actions load a scheduled event can still be delayed or dropped. The
 preparation itself is idempotent:
@@ -133,6 +151,23 @@ be disabled to run all validation and consistency checks without changing npm,
 Git tags or GitHub Releases. Publication, tag creation and GitHub Release
 creation are independently idempotent, so a partially completed run can be
 retried safely.
+
+### Release PR CI
+
+GitHub does not start a workflow in response to an event raised by the default
+`GITHUB_TOKEN`, so a Release PR opened with it never triggers `ci.yml` through
+`on: pull_request`. Preparation therefore prefers a `RELEASE_PR_TOKEN` secret
+when one exists and falls back to `github.token`, noting in the run summary
+whenever it fell back. Provide a token with `contents: write` and
+`pull-requests: write` on this repository — a fine-grained personal access token
+or a GitHub App installation token — if Release PRs must show CI results.
+Required status checks make it mandatory: without it those checks stay pending
+forever and the PR can never merge.
+
+Release validation itself does not depend on the secret. `publish.yml` re-runs
+`release:build` and the full package audit against the merge commit, so a
+Release PR merged without PR-level CI is still validated before anything reaches
+npm.
 
 ## Local release build
 
@@ -188,13 +223,15 @@ Before enabling publication:
 2. confirm redistribution rights for the extracted ZCode runtime;
 3. under the GitHub repository's **Settings** → **Actions** → **General**,
    enable **Allow GitHub Actions to create and approve pull requests**;
-4. open the package on npmjs.com and select **Settings** →
+4. optionally add a `RELEASE_PR_TOKEN` repository secret so Release PRs run
+   `pull_request` CI, as described under [Release PR CI](#release-pr-ci);
+5. open the package on npmjs.com and select **Settings** →
    **Trusted Publisher** → **GitHub Actions**;
-5. enter the GitHub organization or user, repository, and workflow filename
+6. enter the GitHub organization or user, repository, and workflow filename
    `publish.yml`; leave the environment name empty because this
    workflow does not use a GitHub Environment, and select `npm publish` under
    **Allowed actions**;
-6. save the publisher, prepare a `cli` release, and merge its Release PR to
+7. save the publisher, prepare a `cli` release, and merge its Release PR to
    verify an OIDC publication.
 
 The publisher runs on a GitHub-hosted runner with Node 24, grants

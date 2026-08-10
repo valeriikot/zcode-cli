@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
+import { MAX_ACTIVE_TOOL_TEXT_CHARACTERS } from "../packages/zcode-tui/src/bounded-tool-text.ts";
 import { ThinkingView } from "../packages/zcode-tui/src/thinking-view.ts";
 import { createTheme } from "../packages/zcode-tui/src/theme.ts";
 
@@ -38,6 +39,38 @@ describe("TUI thinking view", () => {
     expect(lines.join("\n")).toContain("检查结果");
     expect(lines.join("\n")).toContain("reasoning_delta");
     expect(lines.every((line) => visibleWidth(line) <= 30)).toBe(true);
+  });
+
+  test("bounds retained reasoning text like an active tool stream", () => {
+    const view = new ThinkingView(createTheme(false));
+    view.append("REASONING-HEAD ");
+    for (let index = 0; index < 400; index += 1) view.append(`${"considering options ".repeat(50)}\n`);
+    view.append(" REASONING-TAIL");
+
+    const retained = view.getSearchText();
+    expect(retained.length).toBeLessThanOrEqual(MAX_ACTIVE_TOOL_TEXT_CHARACTERS);
+    expect(retained).toContain("REASONING-HEAD");
+    expect(retained).toContain("REASONING-TAIL");
+    expect(retained).toContain("characters omitted");
+
+    const rendered = view.render(80).join("\n");
+    expect(rendered).toContain("◇ Thinking · active");
+    expect(rendered).toContain("REASONING-TAIL");
+    view.complete();
+    expect(view.hasHiddenContent()).toBe(true);
+  });
+
+  test("replaces bounded text without leaving the previous stream behind", () => {
+    const view = new ThinkingView(createTheme(false));
+    view.setText("first reasoning");
+    view.setText("second reasoning");
+    expect(view.getSearchText()).toBe("second reasoning");
+    expect(view.render(40).join("\n")).not.toContain("first");
+
+    view.setText("   ");
+    view.complete();
+    expect(view.hasHiddenContent()).toBe(false);
+    expect(view.render(40).join("\n")).not.toContain("Ctrl+O to expand");
   });
 
   test("keeps routine thinking content free of full-width backgrounds", () => {

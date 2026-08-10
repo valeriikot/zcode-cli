@@ -100,20 +100,30 @@ function normalizedOrderedListNumber(start: number, index: number): number | und
   return marker <= 999_999_999 ? marker : undefined;
 }
 
-function flatUnorderedListLines(text: string): string[] | undefined {
-  if (!text || text.includes("\t") || text.includes("\n\n")) return undefined;
+function flatUnorderedListLines(
+  text: string,
+  maximumLines = maxStreamingStructuredLines
+): string[] | undefined {
+  if (!text || text.includes("\t") || text.includes("\n\n")
+    || text.length > maxStreamingStructuredSourceCharacters) {
+    return undefined;
+  }
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  return lines.length > 0 && lines.every((line) => /^[-+*] +\S.*$/u.test(line))
+  return lines.length > 0 && lines.length <= maximumLines
+    && lines.every((line) => /^[-+*] +\S.*$/u.test(line))
     ? lines
     : undefined;
 }
 
-function flatOrderedListLines(text: string): string[] | undefined {
+function flatOrderedListLines(
+  text: string,
+  maximumLines = maxStreamingStructuredLines
+): string[] | undefined {
   if (!text || text.includes("\t") || text.includes("\n\n")) return undefined;
   const lines = text.split("\n");
   if (lines.at(-1) === "") lines.pop();
-  if (lines.length === 0 || lines.length > maxStreamingStructuredLines
+  if (lines.length === 0 || lines.length > maximumLines
     || text.length > maxStreamingStructuredSourceCharacters) {
     return undefined;
   }
@@ -519,8 +529,8 @@ function streamingRootListSources(
   text: string,
   maximumStructuredChunks = maxStreamingStructuredLines
 ): StreamingListSources | undefined {
-  const adjacent = flatUnorderedListLines(text)
-    ?? flatOrderedListLines(text)
+  const adjacent = flatUnorderedListLines(text, maximumStructuredChunks)
+    ?? flatOrderedListLines(text, maximumStructuredChunks)
     ?? rootOrderedNestedListChunks(text, maximumStructuredChunks)
     ?? rootOrderedListContinuationChunks(text, maximumStructuredChunks)
     ?? rootNestedListChunks(text, maximumStructuredChunks)
@@ -2989,6 +2999,29 @@ function startsContextualMarkdownBlock(line: string): boolean {
   return /^(?:[ \t]| {0,3}(?:>|[-+*](?:\s|$)|\d+[.)](?:\s|$)))/u.test(line);
 }
 
+/**
+ * A window chunk is re-parsed on its own, so it may only begin where Markdown
+ * stops depending on earlier lines: the next item of a tight root-level list.
+ * Every other position continues something — an indented or lazy paragraph
+ * continuation, a setext underline, or a loose item that needs its blank
+ * separator — and would re-parse into a different block.
+ */
+function startsWindowChunk(lines: readonly string[], index: number): boolean {
+  const line = lines[index];
+  const previous = lines[index - 1];
+  if (!line || !previous || !/^(?:[-+*]|\d{1,9}[.)])(?: |$)/u.test(line)) return false;
+  return /^(?:(?:[-+*]|\d{1,9}[.)])(?: |$)|[ \t]+\S)/u.test(previous);
+}
+
+function windowChunkStarts(lines: readonly string[]): number[] {
+  const starts = [0];
+  for (let index = markdownWindowChunkLines; index < lines.length; index += 1) {
+    if (index - starts.at(-1)! < markdownWindowChunkLines) continue;
+    if (startsWindowChunk(lines, index)) starts.push(index);
+  }
+  return starts;
+}
+
 export function splitMarkdownSegments(text: string): MarkdownSegment[] {
   const lines = text.split("\n");
   const segments: MarkdownSegment[] = [];
@@ -3521,16 +3554,14 @@ export class RichMarkdown implements Component {
       || lines.some((line) => openingFence(line) || /^\s*\|.*\|\s*$/u.test(line))) {
       return [rendered.component];
     }
-    const components: Component[] = [];
-    for (let start = 0; start < lines.length; start += markdownWindowChunkLines) {
-      components.push(new Markdown(
-        lines.slice(start, start + markdownWindowChunkLines).join("\n"),
-        this.paddingX,
-        0,
-        this.theme.markdown
-      ));
-    }
-    return components;
+    const starts = windowChunkStarts(lines);
+    if (starts.length < 2) return [rendered.component];
+    return starts.map((start, index) => new Markdown(
+      lines.slice(start, starts[index + 1]).join("\n"),
+      this.paddingX,
+      0,
+      this.theme.markdown
+    ));
   }
 }
 

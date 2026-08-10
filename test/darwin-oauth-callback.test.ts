@@ -148,6 +148,83 @@ describe("native macOS OAuth callback diagnostics", () => {
     });
   });
 
+  test("treats a recycled PID as stale instead of blocking login forever", async () => {
+    await withTemporaryHome(async (home) => {
+      const appPath = join(home, "Applications", "ZCode CLI OAuth Callback stale.app");
+      const recoveryDirectory = join(home, ".zcode", "cli");
+      const recordPath = join(recoveryDirectory, "oauth-handler-recovery.json");
+      await mkdir(recoveryDirectory, { recursive: true });
+      const record = {
+        appPath,
+        bundleId: "dev.zcode.cli.oauth-callback.stale",
+        // A live PID this process does not own: the parent is always alive.
+        pid: process.ppid,
+        previousHandler: "com.example.previous",
+        scheme: "zcode"
+      };
+
+      await writeFile(recordPath, JSON.stringify({ ...record, createdAt: Date.now() }));
+      await expect(recoverStaleDarwinOAuthHandler({
+        env: { HOME: home },
+        runCommand: fakeRunner({ initialHandler: "com.example.previous" }),
+        scheme: "zcode"
+      })).rejects.toThrow(/Another Z.AI login is already waiting/);
+
+      await writeFile(recordPath, JSON.stringify({
+        ...record,
+        createdAt: Date.now() - 7 * 60_000
+      }));
+      await recoverStaleDarwinOAuthHandler({
+        env: { HOME: home },
+        runCommand: fakeRunner({ initialHandler: "com.example.previous" }),
+        scheme: "zcode"
+      });
+      expect(await Bun.file(recordPath).exists()).toBe(false);
+    });
+  });
+
+  test("keeps the callback app recoverable when the handler restore fails", async () => {
+    await withTemporaryHome(async (home) => {
+      let handlerWrites = 0;
+      const runCommand: CommandRunner = async (command, args) => {
+        if (command === "/usr/bin/osascript" && args.length === 6) {
+          handlerWrites += 1;
+          // Activation succeeds; the restore during dispose fails.
+          return handlerWrites === 1
+            ? { code: 0, stderr: "", stdout: "0" }
+            : { code: 1, stderr: "simulated restore failure", stdout: "" };
+        }
+        if (command === "/usr/bin/osascript") {
+          return {
+            code: 0,
+            stderr: "",
+            stdout: handlerWrites === 0 ? "com.example.previous" : lastActivatedBundleId
+          };
+        }
+        return { code: 0, stderr: "", stdout: "" };
+      };
+      let lastActivatedBundleId = "";
+      let unregistered = false;
+      const receiver = await createReceiver(home, async (command, args) => {
+        if (command === "/usr/bin/plutil" && args[1] === "CFBundleIdentifier") {
+          lastActivatedBundleId = args[3] ?? "";
+        }
+        if (command.endsWith("/lsregister") && args[0] === "-u") unregistered = true;
+        return await runCommand(command, args);
+      });
+
+      await receiver.dispose();
+
+      // The scheme still points at our bundle, so the next login must be able to
+      // finish the restore: neither the record nor the registration may be gone.
+      expect(unregistered).toBe(false);
+      const recordPath = join(home, ".zcode", "cli", "oauth-handler-recovery.json");
+      expect(await Bun.file(recordPath).exists()).toBe(true);
+      const stored = JSON.parse(await Bun.file(recordPath).text()) as { bundleId: string };
+      expect(stored.bundleId).toBe(lastActivatedBundleId);
+    });
+  });
+
   test("gives actionable handler activation and timeout guidance", async () => {
     await withTemporaryHome(async (home) => {
       await expect(createReceiver(home, fakeRunner({ mismatchOnVerify: true }))).rejects.toThrow(

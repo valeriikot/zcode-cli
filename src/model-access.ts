@@ -108,11 +108,48 @@ export async function ensureUserConfig(
       }
       return { configPath, created: false };
     }
+    if (isNodeError(error) && error.code && linkUnsupportedCodes.has(error.code)) {
+      return await createUserConfigWithoutLink(configPath);
+    }
     throw new Error(`Unable to create ZCode config file ${configPath}: ${errorMessage(error)}`, {
       cause: error
     });
   } finally {
     await rm(temporaryPath, { force: true }).catch(() => {});
+  }
+}
+
+// Network homes (SMB/NFS), FAT-backed profiles and some container mounts reject
+// hard links, so exclusive create is the fallback for atomic first-write.
+const linkUnsupportedCodes = new Set([
+  "EACCES",
+  "EMLINK",
+  "ENOSYS",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+  "EXDEV"
+]);
+
+async function createUserConfigWithoutLink(configPath: string): Promise<UserConfigBootstrapResult> {
+  let file;
+  try {
+    file = await open(configPath, "wx", 0o600);
+    await file.writeFile(`${JSON.stringify(defaultUserConfig, null, 2)}\n`, "utf8");
+    await file.sync();
+    return { configPath, created: true };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "EEXIST") {
+      if (!await configFileExists(configPath)) {
+        throw new Error(`ZCode config path exists but is not a file: ${configPath}`);
+      }
+      return { configPath, created: false };
+    }
+    throw new Error(`Unable to create ZCode config file ${configPath}: ${errorMessage(error)}`, {
+      cause: error
+    });
+  } finally {
+    await file?.close();
   }
 }
 

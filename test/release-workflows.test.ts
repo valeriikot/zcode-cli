@@ -99,9 +99,11 @@ describe("release workflows", () => {
     expect(install?.run).toBe("bun install --frozen-lockfile");
     expect(build?.run).toBe("bun run release:build");
     expect(pack?.run).toBe("bun run release:pack");
-    expect(metadata?.run).toContain("npm pkg fix --dry-run --json");
     expect(metadata?.run).toContain("git diff --check");
     expect(metadata?.run).toContain("git diff --exit-code -- package.json zcode-runtime.lock.json");
+    expect(metadata?.run).toContain("npm pkg fix");
+    expect(metadata?.run).not.toContain("--dry-run");
+    expect(metadata?.run).toContain("git diff --quiet -- package.json");
     expect(source).not.toContain("NPM_TOKEN");
     expect(source).not.toContain("npm publish");
     expect(source).not.toContain("id-token: write");
@@ -116,16 +118,14 @@ describe("release workflows", () => {
     const setupBun = findAction(steps, "oven-sh/setup-bun", actionShas.setupBun);
     const releaseBuild = steps.find((step) => step.name === "Build and validate release candidate");
     const releaseMetadata = steps.find((step) => step.name === "Prepare release metadata");
-    const createPullRequest = steps.find((step) => step.name === "Create or update release pull request");
     const keepalive = workflow.jobs.keepalive!;
     const keepaliveStep = keepalive.steps.find((step) => step.name === "Keep scheduled workflow enabled");
 
     expect(workflow.on).toHaveProperty("schedule");
     expect(workflow.on).toHaveProperty("workflow_dispatch");
-    expect(workflow.on.schedule).toEqual([
-      { cron: "30 1 * * *", timezone: "Asia/Shanghai" }
-    ]);
-    expect(workflow.permissions).toEqual({ contents: "write", "pull-requests": "write" });
+    expect(workflow.on.schedule).toEqual([{ cron: "30 17 * * *" }]);
+    expect(workflow.permissions).toEqual({});
+    expect(job.permissions).toEqual({ contents: "read" });
     expect(job.if).toContain("github.event_name == 'schedule'");
     expect(job.if).toContain("github.ref_name == github.event.repository.default_branch");
     expect(checkout?.with?.["persist-credentials"]).toBe(false);
@@ -136,12 +136,6 @@ describe("release workflows", () => {
     expect(releaseMetadata?.run).toContain(
       "compareReleaseVersions(process.env.PACKAGE_VERSION, process.env.BASE_VERSION) > 0"
     );
-    expect(createPullRequest?.uses).toBe(
-      "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1"
-    );
-    expect(createPullRequest?.with?.["add-paths"]).toContain("package.json");
-    expect(createPullRequest?.with?.["add-paths"]).toContain("zcode-runtime.lock.json");
-    expect(createPullRequest?.with?.branch).toBe("${{ steps.release.outputs.branch }}");
     expect(keepalive.if).toBe("github.event_name == 'schedule'");
     expect(keepalive.permissions).toEqual({ actions: "write" });
     expect(keepalive["timeout-minutes"]).toBe(5);
@@ -151,6 +145,58 @@ describe("release workflows", () => {
     );
     expect(source).not.toContain("NPM_TOKEN");
     expect(source).not.toContain("npm publish");
+  });
+
+  test("keeps the untrusted runtime build out of the privileged release-PR job", async () => {
+    const { workflow } = await readWorkflow("prepare-release.yml");
+    const prepare = workflow.jobs.prepare!;
+    const pullRequest = workflow.jobs.pull_request!;
+    const upload = findAction(prepare.steps, "actions/upload-artifact", actionShas.uploadArtifact);
+    const download = findAction(pullRequest.steps, "actions/download-artifact", actionShas.downloadArtifact);
+    const transfer = pullRequest.steps.find((step) => step.name === "Apply validated release metadata");
+    const createPullRequest = pullRequest.steps.find(
+      (step) => step.name === "Create or update release pull request"
+    );
+
+    expect(prepare.permissions).toEqual({ contents: "read" });
+    expect(pullRequest.permissions).toEqual({ contents: "write", "pull-requests": "write" });
+    expect(pullRequest.needs).toBe("prepare");
+    expect(pullRequest.if).toBe("needs.prepare.outputs.changed == 'true'");
+
+    // The privileged job must never execute the downloaded upstream runtime.
+    expect(pullRequest.steps.some((step) => step.run?.includes("bun"))).toBe(false);
+    expect(pullRequest.steps.some((step) => step.uses?.startsWith("oven-sh/setup-bun"))).toBe(false);
+    expect(pullRequest.steps.some((step) => step.name === "Install dependencies")).toBe(false);
+    expect(pullRequest.steps.some((step) => step.run?.includes("release:prepare"))).toBe(false);
+
+    expect(upload?.with?.["if-no-files-found"]).toBe("error");
+    expect(upload?.with?.name).toBe("${{ steps.release.outputs.artifact_name }}");
+    expect(prepare.outputs?.artifact_name).toBe("${{ steps.release.outputs.artifact_name }}");
+    expect(download?.with?.name).toBe("${{ needs.prepare.outputs.artifact_name }}");
+    expect(transfer?.run).toContain("Package version changed while transferring the release.");
+    expect(createPullRequest?.uses).toBe(
+      "peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1"
+    );
+    expect(createPullRequest?.with?.token).toBe("${{ secrets.RELEASE_PR_TOKEN || github.token }}");
+    expect(createPullRequest?.with?.["add-paths"]).toContain("package.json");
+    expect(createPullRequest?.with?.["add-paths"]).toContain("zcode-runtime.lock.json");
+    expect(createPullRequest?.with?.branch).toBe("${{ needs.prepare.outputs.branch }}");
+  });
+
+  test("names run artifacts per attempt so re-runs do not collide", async () => {
+    const { workflow: publish } = await readWorkflow("publish.yml");
+    const { workflow: prepare } = await readWorkflow("prepare-release.yml");
+    const packageStep = publish.jobs.validate!.steps.find(
+      (step) => step.name === "Pack and install-test release"
+    );
+    const metadataStep = prepare.jobs.prepare!.steps.find(
+      (step) => step.name === "Prepare release metadata"
+    );
+
+    for (const name of [packageStep?.env?.ARTIFACT_NAME, metadataStep?.env?.ARTIFACT_NAME]) {
+      expect(name).toContain("github.run_id");
+      expect(name).toContain("github.run_attempt");
+    }
   });
 
   test("validates releases without write credentials before the privileged publish job", async () => {

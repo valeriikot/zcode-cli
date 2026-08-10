@@ -8,6 +8,7 @@ const launchServicesRegister = "/System/Library/Frameworks/CoreServices.framewor
 const managedBundlePrefix = "dev.zcode.cli.oauth-callback.";
 const managedAppPrefix = "ZCode CLI OAuth Callback ";
 const defaultTimeoutMs = 5 * 60_000;
+const staleRecoveryMs = defaultTimeoutMs + 60_000;
 
 const currentHandlerScript = String.raw`
 ObjC.import("AppKit");
@@ -32,6 +33,7 @@ export type CommandRunner = (command: string, args: string[]) => Promise<Command
 interface RecoveryRecord {
   appPath: string;
   bundleId: string;
+  createdAt?: number;
   pid: number;
   previousHandler: string;
   scheme: string;
@@ -126,7 +128,9 @@ export function callbackAppleScript(
     "try",
     "set fileHandle to open for access outputFile with write permission",
     "set eof fileHandle to 0",
-    "write theURL to fileHandle as «class utf8»",
+    // The trailing linefeed terminates the record so the reader can tell a
+    // complete URL from a truncate-then-write in progress.
+    "write (theURL & linefeed) to fileHandle as «class utf8»",
     "close access fileHandle",
     "on error",
     "try",
@@ -201,7 +205,10 @@ export async function recoverStaleDarwinOAuthHandler(
     await rm(path, { force: true });
     return;
   }
-  if (record.pid !== process.pid && processIsAlive(record.pid)) {
+  // A recycled PID must not block login forever: no live login can outlast the
+  // authorization timeout, so an older record is stale regardless of its PID.
+  const age = typeof record.createdAt === "number" ? Date.now() - record.createdAt : Infinity;
+  if (record.pid !== process.pid && processIsAlive(record.pid) && age < staleRecoveryMs) {
     throw new Error("Another Z.AI login is already waiting for authorization.");
   }
   const current = await currentDefaultHandler(runner, record.scheme).catch(() => "");
@@ -275,9 +282,22 @@ export async function createDarwinUrlCallbackReceiver(
   let disposePromise: Promise<void> | undefined;
 
   const cleanup = async (): Promise<void> => {
-    const current = await currentDefaultHandler(runner, options.scheme).catch(() => "");
-    if (handlerChanged && current === bundleId) {
-      await setDefaultHandler(runner, options.scheme, previousHandler || "none").catch(() => {});
+    let handlerOwned = true;
+    if (handlerChanged) {
+      const current = await currentDefaultHandler(runner, options.scheme).catch(() => bundleId);
+      handlerOwned = current === bundleId;
+      if (handlerOwned) {
+        const restored = await setDefaultHandler(runner, options.scheme, previousHandler || "none")
+          .then(() => true)
+          .catch(() => false);
+        // Leave the app bundle and the recovery record in place when the scheme
+        // still points at us, so the next login can finish the restore instead
+        // of stranding zcode:// on a deleted bundle.
+        if (!restored) {
+          await rm(temporaryDirectory, { recursive: true, force: true });
+          return;
+        }
+      }
     }
     await unregisterApp(runner, appPath);
     await rm(appPath, { recursive: true, force: true });
@@ -343,6 +363,7 @@ export async function createDarwinUrlCallbackReceiver(
     const record: RecoveryRecord = {
       appPath,
       bundleId,
+      createdAt: Date.now(),
       pid: process.pid,
       previousHandler,
       scheme: options.scheme
@@ -377,7 +398,7 @@ export async function createDarwinUrlCallbackReceiver(
       while (Date.now() - startedAt < timeoutMs) {
         if (signal?.aborted) throw abortReason(signal);
         const callback = await readFile(callbackPath, "utf8").catch(() => "");
-        if (callback.trim()) return callback.trim();
+        if (callback.includes("\n") && callback.trim()) return callback.trim();
         await delay(100, signal);
       }
       throw new Error(

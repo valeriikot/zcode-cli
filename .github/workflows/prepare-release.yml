@@ -12,12 +12,10 @@ on:
           - cli
           - upstream
   schedule:
-    - cron: "30 1 * * *"
-      timezone: "Asia/Shanghai"
+    # 01:30 Asia/Shanghai. GitHub evaluates cron in UTC only.
+    - cron: "30 17 * * *"
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
   group: zcode-cli-prepare-release
@@ -28,6 +26,18 @@ jobs:
     if: github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      artifact_name: ${{ steps.release.outputs.artifact_name }}
+      changed: ${{ steps.release.outputs.changed }}
+      kind: ${{ steps.release.outputs.kind }}
+      branch: ${{ steps.release.outputs.branch }}
+      package_name: ${{ steps.release.outputs.package_name }}
+      package_version: ${{ steps.release.outputs.package_version }}
+      app_version: ${{ steps.release.outputs.app_version }}
+      runtime_sha512: ${{ steps.release.outputs.runtime_sha512 }}
+      base_commit: ${{ steps.base.outputs.commit }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -53,6 +63,7 @@ jobs:
         run: |
           PACKAGE_VERSION=$(bun -e "console.log((await Bun.file('package.json').json()).version)")
           echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Increment CLI build
         if: github.event_name == 'workflow_dispatch' && inputs.kind == 'cli'
@@ -74,6 +85,7 @@ jobs:
         id: release
         shell: bash
         env:
+          ARTIFACT_NAME: release-metadata-${{ github.run_id }}-${{ github.run_attempt }}
           BASE_VERSION: ${{ steps.base.outputs.package_version }}
           EVENT_NAME: ${{ github.event_name }}
           REQUESTED_KIND: ${{ inputs.kind || 'upstream' }}
@@ -91,6 +103,7 @@ jobs:
           APP_VERSION=$(bun -e "console.log((await Bun.file('zcode-runtime.lock.json').json()).appVersion)")
           RUNTIME_SHA512=$(bun -e "console.log((await Bun.file('zcode-runtime.lock.json').json()).sha512)")
 
+          echo "artifact_name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
           echo "kind=$RELEASE_KIND" >> "$GITHUB_OUTPUT"
           echo "branch=$RELEASE_BRANCH" >> "$GITHUB_OUTPUT"
           echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
@@ -130,28 +143,77 @@ jobs:
             fi
           fi
 
+          rm -rf release-metadata
+          mkdir release-metadata
+          cp package.json zcode-runtime.lock.json release-metadata/
           echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validated release metadata
+        if: steps.release.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.release.outputs.artifact_name }}
+          path: release-metadata
+          if-no-files-found: error
+          retention-days: 7
+
+  pull_request:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.prepare.outputs.base_commit }}
+
+      - name: Download validated release metadata
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact_name }}
+          path: release-metadata
+
+      - name: Apply validated release metadata
+        env:
+          EXPECTED_NAME: ${{ needs.prepare.outputs.package_name }}
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.package_version }}
+        run: |
+          for FILE in package.json zcode-runtime.lock.json; do
+            [[ -f "release-metadata/$FILE" ]] || { echo "Validated metadata is missing $FILE." >&2; exit 1; }
+          done
+          PACKAGE_NAME=$(node -p "JSON.parse(require('fs').readFileSync('release-metadata/package.json', 'utf8')).name")
+          PACKAGE_VERSION=$(node -p "JSON.parse(require('fs').readFileSync('release-metadata/package.json', 'utf8')).version")
+          [[ "$PACKAGE_NAME" == "$EXPECTED_NAME" ]] || { echo "Package name changed while transferring the release." >&2; exit 1; }
+          [[ "$PACKAGE_VERSION" == "$EXPECTED_VERSION" ]] || { echo "Package version changed while transferring the release." >&2; exit 1; }
+          cp release-metadata/package.json release-metadata/zcode-runtime.lock.json .
+          rm -rf release-metadata
+          git diff --stat -- package.json zcode-runtime.lock.json
 
       - name: Create or update release pull request
         id: release_pr
-        if: steps.release.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          token: ${{ github.token }}
+          # A PAT makes the release PR trigger `pull_request` CI; events raised
+          # by github.token never start another workflow.
+          token: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
           add-paths: |
             package.json
             zcode-runtime.lock.json
           base: ${{ github.event.repository.default_branch }}
-          branch: ${{ steps.release.outputs.branch }}
+          branch: ${{ needs.prepare.outputs.branch }}
           delete-branch: true
-          commit-message: "chore(release): prepare ${{ steps.release.outputs.package_name }} ${{ steps.release.outputs.package_version }}"
-          title: "chore(release): prepare ${{ steps.release.outputs.package_name }} ${{ steps.release.outputs.package_version }}"
+          commit-message: "chore(release): prepare ${{ needs.prepare.outputs.package_name }} ${{ needs.prepare.outputs.package_version }}"
+          title: "chore(release): prepare ${{ needs.prepare.outputs.package_name }} ${{ needs.prepare.outputs.package_version }}"
           body: |
-            Prepare `${{ steps.release.outputs.package_name }}@${{ steps.release.outputs.package_version }}` for release.
+            Prepare `${{ needs.prepare.outputs.package_name }}@${{ needs.prepare.outputs.package_version }}` for release.
 
-            - Release kind: `${{ steps.release.outputs.kind }}`
-            - ZCode App: `${{ steps.release.outputs.app_version }}`
-            - Runtime SHA-512: `${{ steps.release.outputs.runtime_sha512 }}`
+            - Release kind: `${{ needs.prepare.outputs.kind }}`
+            - ZCode App: `${{ needs.prepare.outputs.app_version }}`
+            - Runtime SHA-512: `${{ needs.prepare.outputs.runtime_sha512 }}`
             - Runtime extraction and validation: passed
 
             The generated `vendor/` runtime remains outside Git; its verified
@@ -160,15 +222,18 @@ jobs:
             Git tag, and a GitHub Release from the merge commit.
 
       - name: Summarize release pull request
-        if: steps.release.outputs.changed == 'true'
         env:
+          HAS_RELEASE_PR_TOKEN: ${{ secrets.RELEASE_PR_TOKEN != '' }}
           OPERATION: ${{ steps.release_pr.outputs.pull-request-operation }}
           PR_URL: ${{ steps.release_pr.outputs.pull-request-url }}
-          VERSION: ${{ steps.release.outputs.package_version }}
+          VERSION: ${{ needs.prepare.outputs.package_version }}
         run: |
           echo "Prepared ${VERSION}: ${OPERATION}." >> "$GITHUB_STEP_SUMMARY"
           if [[ -n "$PR_URL" ]]; then
             echo "Release PR: ${PR_URL}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$HAS_RELEASE_PR_TOKEN" != "true" ]]; then
+            echo "RELEASE_PR_TOKEN is unset; this PR will not run pull_request CI." >> "$GITHUB_STEP_SUMMARY"
           fi
 
   keepalive:

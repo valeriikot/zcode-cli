@@ -253,6 +253,7 @@ async function completeOfficialZaiLogin(
   const onAbort = () => child.kill("SIGINT");
   abortSignal.addEventListener("abort", onAbort, { once: true });
   try {
+    child.stdin?.on("error", () => {});
     child.stdin?.end(JSON.stringify(payload));
     return await waitForChild(child);
   } finally {

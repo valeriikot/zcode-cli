@@ -80,6 +80,7 @@ describe("plugin CLI routing", () => {
 
     expect(await runPluginCommand(["--json", "plugins", "discover"], testHarness.options)).toBe(0);
     expect(testHarness.calls).toHaveLength(1);
+    expect(testHarness.calls[0]).toMatchObject({ method: "plugins/overview" });
     expect(testHarness.calls[0]).toMatchObject({
       method: "plugins/overview",
       params: {

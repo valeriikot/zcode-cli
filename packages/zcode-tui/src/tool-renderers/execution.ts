@@ -14,15 +14,37 @@ import {
 } from "./helpers.ts";
 import { canonicalToolName } from "./registry.ts";
 
+// Terminal states are listed here rather than imported from the view layer so the
+// renderers keep depending only on their own module graph.
+const terminalStates = new Set([
+  "complete",
+  "completed",
+  "success",
+  "failed",
+  "error",
+  "cancelled",
+  "rejected",
+  "interrupted"
+]);
+
+function streamTail(tail: string | undefined): string | undefined {
+  return tail ? sanitizeTerminalText(tail) : undefined;
+}
+
 export function bashRender(options: SpecializedToolRenderOptions): SpecializedToolRenderResult {
   const { progress, result, theme } = options;
   const record = nestedRecord(result);
-  const stdout = progress?.stdoutTail
-    ? sanitizeTerminalText(progress.stdoutTail)
-    : recordString(record, ["stdout", "output"]) ?? directText(result);
-  const stderr = progress?.stderrTail
-    ? sanitizeTerminalText(progress.stderrTail)
-    : recordString(record, ["stderr"]);
+  // Progress is retained past the terminal transition, so the rolling tail may
+  // only win while the call is still live and never in the expanded view.
+  const streaming = !options.expanded && !terminalStates.has(options.state.toLowerCase());
+  const resultStdout = recordString(record, ["stdout", "output"]) ?? directText(result);
+  const resultStderr = recordString(record, ["stderr"]);
+  const stdout = streaming
+    ? streamTail(progress?.stdoutTail) ?? resultStdout
+    : resultStdout ?? streamTail(progress?.stdoutTail);
+  const stderr = streaming
+    ? streamTail(progress?.stderrTail) ?? resultStderr
+    : resultStderr ?? streamTail(progress?.stderrTail);
   const duration = progress?.elapsedMs
     ?? progress?.durationMs
     ?? numberField(record, ["durationMs", "duration"]);

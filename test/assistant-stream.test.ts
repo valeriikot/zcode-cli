@@ -76,6 +76,40 @@ describe("TUI assistant stream", () => {
     stream.removePart("part_1");
   });
 
+  test("does not duplicate the response after an earlier part is rewritten", () => {
+    const transcript = new Transcript();
+    const stream = new AssistantStream(
+      createTheme(false),
+      (component, options) => transcript.addBlock(component, options)
+    );
+
+    stream.beginTurn();
+    stream.append("Draft answer.", "part_1", "message_1");
+    stream.append(" Tool commentary.", "part_2", "message_1");
+    stream.upsert("Final answer.", "part_1", "message_1");
+    const response = "Final answer. Tool commentary.";
+    expect(stream.reconcile(response)).toBe(response);
+
+    expect(transcript.blockCount).toBe(2);
+    expect(renderedLines(transcript).join("\n").match(/Final answer\./g)).toHaveLength(1);
+  });
+
+  test("drops removed part text from the reconciled response", () => {
+    const transcript = new Transcript();
+    const stream = new AssistantStream(
+      createTheme(false),
+      (component, options) => transcript.addBlock(component, options)
+    );
+
+    stream.beginTurn();
+    stream.append("Kept answer.", "part_1", "message_1");
+    stream.append(" Retracted commentary.", "part_2", "message_1");
+    stream.removePart("part_2");
+    expect(stream.reconcile("Kept answer.")).toBe("Kept answer.");
+
+    expect(renderedLines(transcript).join("\n").match(/Kept answer\./g)).toHaveLength(1);
+  });
+
   test("releases identified part references at each turn boundary", () => {
     const transcript = new Transcript();
     const stream = new AssistantStream(

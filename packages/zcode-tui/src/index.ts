@@ -188,7 +188,13 @@ import {
   turnTimerAnimationEnabled
 } from "./turn-status.ts";
 import { TurnPresentationRegistry } from "./turn-presentation-registry.ts";
-import { asString, isRecord, type PromptCallOptions, type TuiOptions } from "./types.ts";
+import {
+  asString,
+  isRecord,
+  type PromptCallOptions,
+  type TuiOptions,
+  type UnknownRecord
+} from "./types.ts";
 import { UpdateAvailableView, updateCommand } from "./update-available-view.ts";
 import { Divider, WelcomeBanner } from "./welcome-banner.ts";
 import { WorkspaceAutocompleteProvider } from "./workspace-autocomplete.ts";
@@ -246,6 +252,7 @@ function modelRetryProgress(event: StreamEvent, phase: "scheduled" | "started"):
 const doubleEscapeTimeoutMs = 800;
 const customProviderHelpCommand = "__zcode_custom_provider_help__";
 const rewindEscapeHint = "Esc again to rewind conversation";
+const rewindCancelledMessage = "Conversation rewind cancelled.";
 const recentSteerCommitGuardMs = 400;
 
 interface SendInputDisposition {
@@ -288,10 +295,29 @@ export function suspendedZaiLoginCommand(
   return { args: [runtimeEntry, "login"], program: runtimeExecutable };
 }
 
+export function isRewindCancelKey(data: string): boolean {
+  return matchesKey(data, "escape") || matchesKey(data, "ctrl+c") || matchesKey(data, "ctrl+d");
+}
+
 export function loginFailureDiagnostic(stdout: string, stderr: string): string | undefined {
   const lines = (stderr || stdout).trim().split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   return lines.find((line) => /^(?:error:|failed\b|invalid\b|unknown\b)/iu.test(line))
     ?? lines.at(-1);
+}
+
+/**
+ * Later lifecycle events report only what changed, so a field the update omits
+ * must keep the value an earlier event established on the card.
+ */
+function mergeToolProgress(
+  current: ToolProgressData | undefined,
+  update: ToolProgressData
+): ToolProgressData {
+  const merged: ToolProgressData = { ...current };
+  for (const [key, value] of Object.entries(update)) {
+    if (value !== undefined) (merged as UnknownRecord)[key] = value;
+  }
+  return merged;
 }
 
 function restoredToolState(status: string): string {
@@ -309,7 +335,7 @@ function restoredToolState(status: string): string {
   }
 }
 
-class ZCodeTui {
+export class ZCodeTui {
   private readonly animateTurnTimer: boolean;
   private readonly colorsEnabled: boolean;
   private readonly distributionVersion?: string;
@@ -355,6 +381,9 @@ class ZCodeTui {
   private readonly pendingToolParents = this.presentationRegistry.pendingToolParents;
   private readonly pendingToolProgress = this.presentationRegistry.pendingToolProgress;
   private readonly turnDiffs = new TurnDiffStore();
+  // Removed parts shrink the view registry, so only a counter keeps synthetic
+  // identities for anonymous tool events from reviving a settled card.
+  private anonymousToolSequence = 0;
   private currentToolGroup?: ToolGroupView;
   private currentToolGroupBlockId?: string;
   private currentToolGroupMessageId?: string;
@@ -375,6 +404,7 @@ class ZCodeTui {
   private rewindEscapePending = false;
   private rewindEscapeTimer?: ReturnType<typeof setTimeout>;
   private rewindFlowActive = false;
+  private rewindAbortController?: AbortController;
   private activity?: string;
   private turnStartedAt?: number;
   private turnElapsedMilliseconds = 0;
@@ -390,6 +420,7 @@ class ZCodeTui {
   private usageRefreshInFlight = false;
   private usageRefreshPending = false;
   private runtimeProjection?: RuntimeProjectionSnapshot;
+  private runtimeProjectionGeneration = 0;
   private todos: RuntimeTodo[] = [];
   private todoGroups: RuntimeTodoGroup[] = [];
   private runtimeRefreshInFlight = false;
@@ -702,7 +733,12 @@ class ZCodeTui {
       if (this.notifications.handleInput(data)) return { consume: true };
       if (this.attachmentBar.isActive()) return undefined;
       if (this.choiceDepth > 0) return undefined;
-      if (this.rewindFlowActive) return { consume: true };
+      if (this.rewindFlowActive) {
+        // No dialog is mounted while a runtime call is pending, so interrupt keys
+        // must still reach the flow instead of leaving the terminal trapped.
+        if (!isKeyRelease(data) && isRewindCancelKey(data)) this.cancelRewindFlow();
+        return { consume: true };
+      }
       // Input listeners run before TUI's key-release filter; avoid repeating global actions.
       if (isKeyRelease(data)) return undefined;
       if (!matchesKey(data, "escape")) {
@@ -1409,7 +1445,7 @@ class ZCodeTui {
           : "waiting for model…",
         false
       );
-    } else if (event.type === "turn.failed") {
+    } else if (event.type === "turn_failed" || event.type === "turn.failed") {
       this.finalizeUnresolvedTools("failed", event.message ?? "Turn failed.");
       this.addSystemEvent({ tone: "error", title: "Turn failed", detail: event.message });
     } else if (event.type === "model_retry_scheduled" || event.type === "streamRecovery.updated") {
@@ -1804,7 +1840,7 @@ class ZCodeTui {
       }
       return anonymous;
     }
-    const id = toolCallId ?? partId ?? `${toolName ?? "tool"}-${this.toolViews.size}`;
+    const id = toolCallId ?? partId ?? `${toolName ?? "tool"}-${this.anonymousToolSequence++}`;
     const existing = this.toolViews.get(id);
     if (existing) {
       if (toolName) existing.name = toolName;
@@ -1890,7 +1926,7 @@ class ZCodeTui {
       tool.outputText = undefined;
     }
     if (error !== undefined) tool.error = error;
-    if (progress) tool.progress = { ...tool.progress, ...progress };
+    if (progress) tool.progress = mergeToolProgress(tool.progress, progress);
     if (progress?.parentToolCallId) this.setToolParent(tool, progress.parentToolCallId);
     if (progress?.childToolCallId) {
       const child = this.toolViews.get(progress.childToolCallId);
@@ -1944,7 +1980,10 @@ class ZCodeTui {
     const progress = event.progress ?? {};
     const parent = this.toolViews.get(parentId);
     if (!parent) {
-      this.pendingToolProgress.set(parentId, { ...this.pendingToolProgress.get(parentId), ...progress });
+      this.pendingToolProgress.set(
+        parentId,
+        mergeToolProgress(this.pendingToolProgress.get(parentId), progress)
+      );
       return true;
     }
     this.updateToolView(parent, parent.state, undefined, undefined, progress);
@@ -2503,9 +2542,9 @@ class ZCodeTui {
       }
       if (!command.input) {
         const submission = selectionSubmission(command) ?? undefined;
-        this.queuedSelectionCommand = shouldSuspendForLoginCommand(command.command) && submission
+        await this.runSelectionCommand(shouldSuspendForLoginCommand(command.command) && submission
           ? { ...submission, externalLogin: true }
-          : submission;
+          : submission);
         return;
       }
 
@@ -2523,12 +2562,26 @@ class ZCodeTui {
         }
         const submission = selectionSubmission(command, value);
         if (submission) {
-          this.queuedSelectionCommand = submission;
+          await this.runSelectionCommand(submission);
           return;
         }
         this.addNotice(command.input.emptyStatus ?? "A value is required.", "warning");
       }
     }
+  }
+
+  /**
+   * Only a primary turn resumes queued work when it ends, so a pick made from a
+   * shortcut or a rewind must run now instead of waiting for an unrelated turn.
+   */
+  private async runSelectionCommand(submission: QueuedSubmission | undefined): Promise<void> {
+    this.queuedSelectionCommand = undefined;
+    if (!submission) return;
+    if (this.primaryTurnActive) {
+      this.queuedSelectionCommand = submission;
+      return;
+    }
+    await this.submit(submission.input, submission);
   }
 
   private async showCommandPicker(
@@ -2685,6 +2738,31 @@ class ZCodeTui {
     if (this.activity === rewindEscapeHint) this.updateActivity(undefined);
   }
 
+  private cancelRewindFlow(): void {
+    const abortController = this.rewindAbortController;
+    if (!abortController || abortController.signal.aborted) return;
+    abortController.abort();
+    this.updateActivity("cancelling rewind…");
+  }
+
+  /**
+   * The runtime rewind calls take no abort signal, so an unresponsive call is
+   * abandoned here instead of holding the flow — and the terminal — hostage.
+   */
+  private untilRewindCancelled<T>(call: Promise<T>, signal: AbortSignal): Promise<T> {
+    return Promise.race([
+      call,
+      new Promise<never>((_resolve, reject) => {
+        if (signal.aborted) reject(new Error(rewindCancelledMessage));
+        else signal.addEventListener(
+          "abort",
+          () => reject(new Error(rewindCancelledMessage)),
+          { once: true }
+        );
+      })
+    ]);
+  }
+
   private async showConversationRewind(): Promise<void> {
     if (this.rewindFlowActive) return;
     if (!this.options.loadSessionTranscript) {
@@ -2692,10 +2770,15 @@ class ZCodeTui {
       return;
     }
 
+    const abortController = new AbortController();
     this.rewindFlowActive = true;
+    this.rewindAbortController = abortController;
     try {
       this.updateActivity("loading rewind points…");
-      const targets = rewindTargets(await this.options.loadSessionTranscript());
+      const targets = rewindTargets(await this.untilRewindCancelled(
+        this.options.loadSessionTranscript(),
+        abortController.signal
+      ));
       this.updateActivity(undefined);
       if (targets.length === 0) {
         this.addNotice("There are no previous user inputs to rewind to.", "muted");
@@ -2713,7 +2796,8 @@ class ZCodeTui {
             description: index === 0 ? "Latest input" : `${index + 1} inputs back`,
             payload: target,
             preview: new Text(sanitizeTerminalText(target.text, { preserveSgr: false }), 1, 0)
-          }))
+          })),
+          signal: abortController.signal
         });
         const target = selected?.payload as RewindTarget | undefined;
         if (!target) return;
@@ -2723,8 +2807,12 @@ class ZCodeTui {
         let previewError: string | undefined;
         if (this.options.previewFileRewind) {
           try {
-            preview = fileRewindPreview(await this.options.previewFileRewind(target.checkpointMessageIds));
+            preview = fileRewindPreview(await this.untilRewindCancelled(
+              this.options.previewFileRewind(target.checkpointMessageIds),
+              abortController.signal
+            ));
           } catch (error) {
+            if (abortController.signal.aborted) throw error;
             previewError = error instanceof Error ? error.message : String(error);
           }
         }
@@ -2755,16 +2843,19 @@ class ZCodeTui {
           prompt: `Return to before: ${rewindTargetLabel(target.text, 72)}`,
           help: "Up/Down choose · Enter rewind · Esc back",
           content: new Text(this.rewindFilePreviewText(preview, previewError), 1, 0),
-          items: actions
+          items: actions,
+          signal: abortController.signal
         });
         if (!action) continue;
-        await this.applyConversationRewind(target, action.value as RewindScope);
+        await this.applyConversationRewind(target, action.value as RewindScope, abortController.signal);
         return;
       }
     } catch (error) {
-      this.addNotice(error instanceof Error ? error.message : String(error), "error");
+      const detail = error instanceof Error ? error.message : String(error);
+      this.addNotice(detail, abortController.signal.aborted ? "muted" : "error");
     } finally {
       this.rewindFlowActive = false;
+      if (this.rewindAbortController === abortController) this.rewindAbortController = undefined;
       if (this.activity?.includes("rewind")) this.updateActivity(undefined);
     }
   }
@@ -2803,13 +2894,20 @@ class ZCodeTui {
     return lines.join("\n");
   }
 
-  private async applyConversationRewind(target: RewindTarget, scope: RewindScope): Promise<void> {
+  private async applyConversationRewind(
+    target: RewindTarget,
+    scope: RewindScope,
+    signal: AbortSignal
+  ): Promise<void> {
     let workspaceApplied = false;
     this.updateActivity("rewinding…");
     try {
       if (scope === "workspace" || scope === "both") {
         if (!this.options.applyFileRewind) throw new Error("Workspace rewind is unavailable.");
-        const result = await this.options.applyFileRewind(target.checkpointMessageIds);
+        const result = await this.untilRewindCancelled(
+          this.options.applyFileRewind(target.checkpointMessageIds),
+          signal
+        );
         if (!isRecord(result) || result.applied !== true) {
           throw new Error(responseText(result) ?? "Workspace files could not be rewound safely.");
         }
@@ -2817,13 +2915,19 @@ class ZCodeTui {
       }
 
       if (scope === "conversation" || scope === "both") {
-        const result = await this.options.submitPrompt(rewindCommand("conversation", target.messageId), {
-          inputId: `input_${crypto.randomUUID()}`,
-          queryId: `query_${crypto.randomUUID()}`,
-          onEvent: (event) => this.onEvent(event)
-        });
+        const result = await this.untilRewindCancelled(
+          this.options.submitPrompt(rewindCommand("conversation", target.messageId), {
+            abortSignal: signal,
+            inputId: `input_${crypto.randomUUID()}`,
+            queryId: `query_${crypto.randomUUID()}`,
+            onEvent: (event) => this.onEvent(event)
+          }),
+          signal
+        );
         await this.handleResult(result, false);
-        const transcript = await this.options.loadSessionTranscript?.();
+        const transcript = this.options.loadSessionTranscript
+          ? await this.untilRewindCancelled(this.options.loadSessionTranscript(), signal)
+          : undefined;
         if (rewindTargets(transcript).some((message) => message.messageId === target.messageId)) {
           throw new Error("The runtime did not apply the requested conversation rewind.");
         }
@@ -3494,6 +3598,7 @@ class ZCodeTui {
 
   private applyRuntimeProjection(projection: RuntimeProjectionSnapshot | undefined): void {
     if (!projection) return;
+    this.runtimeProjectionGeneration += 1;
     this.runtimeProjection = projection;
     if (projection.sessionId) this.sessionId = projection.sessionId;
     this.sessionMetrics = mergeMetrics(this.sessionMetrics, {
@@ -3524,6 +3629,7 @@ class ZCodeTui {
     try {
       do {
         this.runtimeRefreshPending = false;
+        const generation = this.runtimeProjectionGeneration;
         const [projectionResult, todosResult] = await Promise.allSettled([
           this.options.readRuntimeProjection?.(),
           this.options.readTodos?.()
@@ -3533,7 +3639,11 @@ class ZCodeTui {
           todos: this.todos,
           todoGroups: this.todoGroups
         };
-        if (projectionResult.status === "fulfilled" && projectionResult.value !== undefined) {
+        // A projection applied while this read was in flight is newer than the
+        // answer it returns, so the poll result must not roll the state back.
+        if (projectionResult.status === "fulfilled"
+          && projectionResult.value !== undefined
+          && generation === this.runtimeProjectionGeneration) {
           next.projection = normalizeRuntimeProjection(projectionResult.value) ?? next.projection;
           if (isRecord(projectionResult.value) && Array.isArray(projectionResult.value.todoGroups)) {
             next.todoGroups = normalizeTodoGroups(projectionResult.value);
@@ -3669,6 +3779,7 @@ class ZCodeTui {
     this.turnAbortController?.abort();
     for (const controller of this.steerAbortControllers) controller.abort();
     this.steerAbortControllers.clear();
+    this.rewindAbortController?.abort();
     this.updateCheckAbortController?.abort();
     if (this.turnTimer) clearInterval(this.turnTimer);
     if (this.rewindEscapeTimer) clearTimeout(this.rewindEscapeTimer);

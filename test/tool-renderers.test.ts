@@ -75,6 +75,100 @@ describe("official tool renderer registry", () => {
     expect(expanded).toContain("Docs · https://docs.zcode.ai · 2 days");
   });
 
+  test("shows the streamed Bash tail only while the call is live", () => {
+    const progress = {
+      stdoutBytes: 4_096,
+      stdoutTail: "pressure line 118\nstreamed tail frame 4999",
+      stderrTail: "streamed warning"
+    };
+    const running = toolCard({
+      name: "Bash",
+      state: "running",
+      input: { command: "pressure" },
+      progress
+    });
+    expect(running).toContain("streamed tail frame 4999");
+
+    const completed = {
+      name: "Bash",
+      state: "complete",
+      input: { command: "pressure" },
+      progress,
+      result: { exitCode: 0, stdout: "Pressure output complete.", stderr: "final warning", success: true }
+    };
+    const card = toolCard(completed);
+    expect(card).toContain("Pressure output complete.");
+    expect(card).toContain("final warning");
+    expect(card).not.toContain("streamed tail frame 4999");
+    expect(card).not.toContain("streamed warning");
+
+    const expanded = expandedCard(completed);
+    expect(expanded).toContain("Pressure output complete.");
+    expect(expanded).not.toContain("streamed tail frame 4999");
+
+    const interrupted = toolCard({
+      name: "Bash",
+      state: "cancelled",
+      input: { command: "pressure" },
+      progress
+    });
+    expect(interrupted).toContain("streamed tail frame 4999");
+  });
+
+  test("pairs every Grep and Glob count with its own noun", () => {
+    const both = toolCard({
+      name: "Grep",
+      state: "complete",
+      input: { pattern: "todo" },
+      result: { numMatches: 42, numFiles: 7 }
+    });
+    expect(both).toContain("Found 42 matches");
+
+    const files = toolCard({
+      name: "Glob",
+      state: "complete",
+      input: { pattern: "**/*.ts" },
+      result: { numFiles: 7 }
+    });
+    expect(files).toContain("Found 7 files");
+
+    const lines = toolCard({
+      name: "Grep",
+      state: "complete",
+      input: { pattern: "todo" },
+      result: { numLines: 3, durationMs: 12 }
+    });
+    expect(lines).toContain("Found 3 lines · 12ms");
+
+    const single = toolCard({
+      name: "Grep",
+      state: "complete",
+      input: { pattern: "todo" },
+      result: { numMatches: 1 }
+    });
+    expect(single).toContain("Found 1 match");
+    expect(single).not.toContain("matche ");
+  });
+
+  test("omits the WebSearch result count until a result exists", () => {
+    const running = toolCard({
+      name: "web_search",
+      state: "running",
+      input: { query: "zcode" }
+    });
+    expect(running).toContain("● Web search zcode · running");
+    expect(running).not.toContain("results");
+    expect(running).not.toContain("└");
+
+    const empty = toolCard({
+      name: "web_search",
+      state: "complete",
+      input: { query: "zcode" },
+      result: { results: [], durationMs: 90 }
+    });
+    expect(empty).toContain("0 results · 90ms");
+  });
+
   test("renders TodoRead and GoalRead without generic JSON", () => {
     const todo = toolCard({
       name: "TodoRead",

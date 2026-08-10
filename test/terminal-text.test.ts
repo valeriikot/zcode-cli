@@ -34,6 +34,18 @@ describe("terminal text safety", () => {
     expect(sanitizeTerminalText("10%\r20%\r\nDone\b!")).toBe("10%\n20%\nDone!");
   });
 
+  test("consumes short escape sequences instead of leaking their payload bytes", () => {
+    expect(sanitizeTerminalText("hello\x1b(Bworld")).toBe("helloworld");
+    expect(sanitizeTerminalText("graphics\x1b)0tail")).toBe("graphicstail");
+    expect(sanitizeTerminalText("save\x1b7restore\x1b8")).toBe("saverestore");
+    expect(sanitizeTerminalText("reset\x1bcafter")).toBe("resetafter");
+    expect(sanitizeTerminalText("index\x1bMnext")).toBe("indexnext");
+    expect(sanitizeTerminalText("align\x1b#8done")).toBe("aligndone");
+    expect(sanitizeTerminalText("soft\x1b!preset")).toBe("softreset");
+    expect(sanitizeTerminalText("keypad\x1b=on\x1b>off")).toBe("keypadonoff");
+    expect(sanitizeTerminalText("broken\x1b(\nnewline")).toBe("broken\nnewline");
+  });
+
   test("matches one-shot sanitizing across every transport chunk boundary", () => {
     const values = [
       "before\x1b[31mred\x1b[0mafter",
@@ -42,6 +54,10 @@ describe("terminal text safety", () => {
       "one\x9b2Jtwo\x9dunsafe\x07three",
       "10%\r20%\r\nDone\tcell",
       "unknown\x1b!escape",
+      "charset\x1b(Bplain",
+      "cursor\x1b7saved\x1b8",
+      "align\x1b#8done",
+      "torn\x1b(\nnewline",
       "unfinished\x1b]discarded"
     ];
 

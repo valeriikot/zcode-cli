@@ -20,20 +20,31 @@ function nonNegativeNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+/**
+ * A snapshot only reports what the runtime measured, so metrics it omits must
+ * stay absent instead of overwriting known values during the next merge.
+ */
+function reportedMetrics(fields: SessionMetrics): SessionMetrics | undefined {
+  const metrics: SessionMetrics = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) (metrics as Record<string, number>)[key] = value;
+  }
+  return Object.keys(metrics).length > 0 ? metrics : undefined;
+}
+
 export function projectionMetrics(value: unknown): SessionMetrics | undefined {
   if (!isRecord(value)) return undefined;
-  const metrics: SessionMetrics = {
+  return reportedMetrics({
     contextUsed: nonNegativeNumber(value.contextUsed),
     contextWindow: nonNegativeNumber(value.contextWindow),
     totalTokens: nonNegativeNumber(value.totalTokenCount),
     turnCount: nonNegativeNumber(value.turnCount)
-  };
-  return Object.values(metrics).some((metric) => metric !== undefined) ? metrics : undefined;
+  });
 }
 
 export function usageMetrics(value: unknown): SessionMetrics | undefined {
   if (!isRecord(value)) return undefined;
-  const metrics: SessionMetrics = {
+  return reportedMetrics({
     totalTokens: nonNegativeNumber(value.totalTokens),
     inputTokens: nonNegativeNumber(value.inputTokens),
     outputTokens: nonNegativeNumber(value.outputTokens),
@@ -42,8 +53,7 @@ export function usageMetrics(value: unknown): SessionMetrics | undefined {
     cacheReadTokens: nonNegativeNumber(value.cacheReadTokens),
     modelRequestCount: nonNegativeNumber(value.modelRequestCount),
     modelErrorCount: nonNegativeNumber(value.modelErrorCount)
-  };
-  return Object.values(metrics).some((metric) => metric !== undefined) ? metrics : undefined;
+  });
 }
 
 export function sessionIdFromUsage(value: unknown): string | undefined {
@@ -53,7 +63,12 @@ export function sessionIdFromUsage(value: unknown): string | undefined {
 }
 
 export function mergeMetrics(current: SessionMetrics, update: SessionMetrics | undefined): SessionMetrics {
-  return update ? { ...current, ...update } : current;
+  if (!update) return current;
+  const merged: SessionMetrics = { ...current };
+  for (const [key, value] of Object.entries(update)) {
+    if (value !== undefined) (merged as Record<string, number>)[key] = value;
+  }
+  return merged;
 }
 
 export function contextRemainingPercent(metrics: SessionMetrics): number | undefined {

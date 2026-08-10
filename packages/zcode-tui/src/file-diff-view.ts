@@ -62,13 +62,26 @@ function parseHunk(value: unknown): FileDiffHunk | undefined {
   };
 }
 
-function countChanges(hunks: FileDiffHunk[]): { additions: number; deletions: number } {
+/**
+ * jsdiff and Git keep "\ No newline at end of file" inside hunk lines. It
+ * annotates the preceding line instead of being one, so it owns no line number
+ * and never advances either side of the gutter.
+ */
+export function isNoNewlineMarker(line: string): boolean {
+  return line.startsWith("\\");
+}
+
+/**
+ * Hunk lines never carry file headers, so a leading "+++" or "---" is real
+ * content ("++counter", "--help") and must be counted.
+ */
+export function countChanges(hunks: FileDiffHunk[]): { additions: number; deletions: number } {
   let additions = 0;
   let deletions = 0;
   for (const hunk of hunks) {
     for (const line of hunk.lines) {
-      if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
-      if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+      if (line.startsWith("+")) additions += 1;
+      if (line.startsWith("-")) deletions += 1;
     }
   }
   return { additions, deletions };
@@ -122,8 +135,10 @@ function parseRange(header: string): Pick<FileDiffHunk, "oldStart" | "oldLines" 
 function parseApplyPatch(patchText: string): FileDiffData[] {
   const files: FileDiffData[] = [];
   let builder: PatchBuilder | undefined;
+  let pendingBlankContext = 0;
 
   const flushHunk = (): void => {
+    pendingBlankContext = 0;
     if (!builder || builder.currentLines.length === 0) return;
     const range = builder.currentHeader ? parseRange(builder.currentHeader) : {};
     const additions = builder.currentLines.filter((line) => line.startsWith("+")).length;
@@ -182,11 +197,14 @@ function parseApplyPatch(patchText: string): FileDiffData[] {
       continue;
     }
     if (rawLine.startsWith("***")) continue;
-    if (/^[+\- ]/u.test(rawLine)) {
-      builder.currentLines.push(rawLine);
-    } else if (rawLine) {
-      builder.currentLines.push(` ${rawLine}`);
+    // Blank context lines usually arrive without their leading space. Hold them
+    // until the next body line so a trailing payload newline adds no phantom row.
+    if (!rawLine) {
+      pendingBlankContext += 1;
+      continue;
     }
+    for (; pendingBlankContext > 0; pendingBlankContext -= 1) builder.currentLines.push(" ");
+    builder.currentLines.push(/^[+\- ]/u.test(rawLine) ? rawLine : ` ${rawLine}`);
   }
   flushFile();
   return files;
@@ -344,19 +362,23 @@ export function wordDiffLines(
 
 function changedWords(hunk: FileDiffHunk, theme: ZCodeTheme, filePath: string): Map<number, string> {
   const output = new Map<number, string>();
-  for (let index = 0; index < hunk.lines.length;) {
-    if (!hunk.lines[index]?.startsWith("-")) {
-      index += 1;
+  // Pair through the "\ No newline" marker: it commonly sits between the removed
+  // and added runs and would otherwise end the removed run early.
+  const positions = hunk.lines.flatMap((line, index) => isNoNewlineMarker(line) ? [] : [index]);
+  const lineAt = (position: number): string => hunk.lines[positions[position]!]!;
+  for (let position = 0; position < positions.length;) {
+    if (!lineAt(position).startsWith("-")) {
+      position += 1;
       continue;
     }
-    const removedStart = index;
-    while (index < hunk.lines.length && hunk.lines[index]?.startsWith("-")) index += 1;
-    const addedStart = index;
-    while (index < hunk.lines.length && hunk.lines[index]?.startsWith("+")) index += 1;
-    const pairCount = Math.min(addedStart - removedStart, index - addedStart);
+    const removedStart = position;
+    while (position < positions.length && lineAt(position).startsWith("-")) position += 1;
+    const addedStart = position;
+    while (position < positions.length && lineAt(position).startsWith("+")) position += 1;
+    const pairCount = Math.min(addedStart - removedStart, position - addedStart);
     for (let offset = 0; offset < pairCount; offset += 1) {
-      const removedIndex = removedStart + offset;
-      const addedIndex = addedStart + offset;
+      const removedIndex = positions[removedStart + offset]!;
+      const addedIndex = positions[addedStart + offset]!;
       const pair = wordDiffLines(
         hunk.lines[removedIndex]!.slice(1),
         hunk.lines[addedIndex]!.slice(1),
@@ -409,6 +431,10 @@ export class FileDiffView implements Component {
             break;
           }
           visibleLines += 1;
+          if (isNoNewlineMarker(sourceLine)) {
+            output.push(...this.renderCodeLine(" ", sourceLine, "", "", digits, width));
+            continue;
+          }
           const marker = sourceLine.startsWith("+") || sourceLine.startsWith("-") || sourceLine.startsWith(" ")
             ? sourceLine[0]!
             : " ";

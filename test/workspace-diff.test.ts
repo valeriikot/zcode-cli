@@ -43,6 +43,28 @@ describe("workspace diff reader", () => {
     });
   });
 
+  test("counts changed lines that begin with a diff marker or trail a no-newline note", () => {
+    const patch = [
+      "diff --git a/src/flags.ts b/src/flags.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/flags.ts",
+      "+++ b/src/flags.ts",
+      "@@ -1,2 +1,2 @@",
+      "---help removed",
+      "\\ No newline at end of file",
+      "+++counter added",
+      " tail",
+      ""
+    ].join("\n");
+    const snapshot = parseWorkspaceDiff(patch, " M src/flags.ts\0");
+
+    expect(snapshot.files[0]).toMatchObject({
+      filePath: "src/flags.ts",
+      additions: 1,
+      deletions: 1
+    });
+  });
+
   test("keeps rename metadata and global truncation", () => {
     const snapshot = parseWorkspaceDiff("", "R  new.ts\0old.ts\0", true);
     expect(snapshot.files[0]).toMatchObject({

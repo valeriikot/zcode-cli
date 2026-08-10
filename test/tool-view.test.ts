@@ -41,6 +41,28 @@ describe("TUI tool execution view", () => {
     expect(larger.length).toBeLessThan(2_700);
   });
 
+  test("applies the character cap to previews that also exceed the line cap", () => {
+    const wide = Array.from({ length: 20 }, (_, index) => `line ${index} ${"x".repeat(3_000)}`).join("\n");
+    const specialized = toolCard({ name: "Bash", state: "complete", result: wide });
+    expect(specialized).toContain("output truncated");
+    expect(specialized).toContain("4 more lines");
+    expect(specialized.length).toBeLessThan(2_700);
+
+    const generic = toolCard({ name: "UnknownTool", state: "complete", result: wide });
+    expect(generic).toContain("output truncated");
+    expect(generic.length).toBeLessThan(2_700);
+
+    const failure = toolCard({ name: "UnknownTool", state: "failed", error: wide });
+    expect(failure).toContain("Error: line 0");
+    expect(failure).toContain("output truncated");
+    expect(failure.length).toBeLessThan(2_700);
+
+    const view = new ToolExecutionView(createTheme(false), { name: "Bash", state: "complete", result: wide });
+    expect(view.hasHiddenContent()).toBe(true);
+    view.setExpanded(true);
+    expect(view.render(200).join("\n")).toContain("line 19");
+  });
+
   test("keeps terminal Error messages compact after payload retention", () => {
     const card = toolCard({ name: "Bash", state: "failed", error: new Error("boom") });
 

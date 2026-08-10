@@ -41,6 +41,20 @@ describe("TUI session status", () => {
     expect(contextRemainingPercent({ contextUsed: 200, contextWindow: 100 })).toBe(0);
   });
 
+  test("keeps known metrics when a snapshot omits them", () => {
+    expect(projectionMetrics({ turnCount: 5 })).toStrictEqual({ turnCount: 5 });
+    expect(usageMetrics({ inputTokens: 12 })).toStrictEqual({ inputTokens: 12 });
+
+    const metrics = mergeMetrics(
+      { contextUsed: 32_000, contextWindow: 128_000, totalTokens: 18_400 },
+      projectionMetrics({ turnCount: 5 })
+    );
+    expect(metrics.totalTokens).toBe(18_400);
+    expect(contextRemainingPercent(metrics)).toBe(75);
+    expect(mergeMetrics({ totalTokens: 10 }, { totalTokens: undefined, inputTokens: 4 }))
+      .toStrictEqual({ totalTokens: 10, inputTokens: 4 });
+  });
+
   test("extracts the official session identifier from usage snapshots", () => {
     expect(sessionIdFromUsage({ sessionId: "sess_protocol" })).toBe("sess_protocol");
     expect(sessionIdFromUsage({ sessionID: "sess_store" })).toBe("sess_store");

@@ -190,6 +190,9 @@ export class RemoteHostService {
       ...(this.deviceName !== undefined ? { clientName: this.deviceName } : {}),
       ...options,
       role: relayRoles.desktop,
+      // A host is a long-running server. Its reconnect backoff must keep the process alive even
+      // while no WebSocket is open, otherwise Node can terminate a pending top-level await.
+      keepAliveOnReconnect: true,
       // A host is listening, not pairing: it waits for its next controller indefinitely.
       waitingTimeoutMs: 0
     });

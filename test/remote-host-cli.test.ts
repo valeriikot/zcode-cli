@@ -59,6 +59,7 @@ async function run(
     env,
     stderr: output.stderr,
     stdout: output.stdout,
+    registerHostLink: async (record) => record,
     ...options
   });
   return { code, output };
@@ -308,7 +309,7 @@ describe("zcode remote serve", () => {
       createHost: fakeHostFactory(hosts),
       cwd: "/home/dev"
     });
-    await Bun.sleep(5);
+    await Bun.sleep(20);
     hosts[0]!.emitFailure({ reason: "kicked", message: "another desktop took over" });
     const { code, output } = await pending;
     expect(code).toBe(1);

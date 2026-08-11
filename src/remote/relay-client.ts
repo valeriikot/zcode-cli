@@ -120,6 +120,8 @@ export interface RelayClientOptions {
   heartbeatAckTimeoutMs?: number;
   heartbeatIntervalMs?: number;
   maximumQueuedPayloads?: number;
+  /** Keep a scheduled reconnect referenced so a long-running host process cannot exit between sockets. */
+  keepAliveOnReconnect?: boolean;
   now?: () => number;
   onLog?: (line: string) => void;
   platform?: string;
@@ -161,6 +163,7 @@ export class RelayClient {
   private readonly failureListeners = new Set<RelayFailureListener>();
   private readonly heartbeatAckTimeoutMs: number;
   private readonly heartbeatIntervalMs: number;
+  private readonly keepAliveOnReconnect: boolean;
   private readonly maximumQueuedPayloads: number;
   private readonly now: () => number;
   private readonly onLog: ((line: string) => void) | undefined;
@@ -190,6 +193,7 @@ export class RelayClient {
     this.clientName = options.clientName ?? defaultClientName;
     this.heartbeatAckTimeoutMs = options.heartbeatAckTimeoutMs ?? defaultHeartbeatAckTimeoutMs;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? defaultHeartbeatIntervalMs;
+    this.keepAliveOnReconnect = options.keepAliveOnReconnect ?? false;
     this.maximumQueuedPayloads = options.maximumQueuedPayloads ?? defaultMaximumQueuedPayloads;
     this.now = options.now ?? (() => Date.now());
     this.onLog = options.onLog;
@@ -542,6 +546,6 @@ export class RelayClient {
       this.reconnectTimer = undefined;
       if (!this.disposed) this.connect();
     }, delay);
-    this.reconnectTimer.unref?.();
+    if (!this.keepAliveOnReconnect) this.reconnectTimer.unref?.();
   }
 }

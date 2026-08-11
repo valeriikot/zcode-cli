@@ -204,6 +204,10 @@ describe("host relay authentication", () => {
     target.socket().onOpen();
     target.socket().onClose(1006, "network blip");
     expect(target.host.state).toBe("reconnecting");
+    const reconnectTimer = (target.host.relay as unknown as {
+      reconnectTimer?: ReturnType<typeof setTimeout>;
+    }).reconnectTimer;
+    expect(reconnectTimer?.hasRef?.()).toBe(true);
     await Bun.sleep(2);
     expect(target.sockets).toHaveLength(2);
     target.host.dispose();

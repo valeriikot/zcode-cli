@@ -163,14 +163,14 @@ Promise<ControllerBridge> {
 }
 
 describe("host relay authentication", () => {
-  test("announces itself in the desktop role and proves with the desktop proof", () => {
+  test("announces itself in the device role and proves with the device proof", () => {
     const target = harness();
     target.host.start();
     expect(target.socket().url).toBe("wss://zcode.z.ai/ws?mid=machine-9");
     target.socket().onOpen();
     expect(target.socket().sent[0]).toEqual({
       type: "auth_init",
-      role: "desktop",
+      role: "device",
       device_sid: deviceSid,
       meta: { platform: "linux", version: "3.3.3", name: "studio" },
       client_ts: expect.any(Number)
@@ -179,7 +179,7 @@ describe("host relay authentication", () => {
     expect(target.socket().sent[1]).toEqual({
       type: "auth_response",
       device_sid: deviceSid,
-      proof: calculateProof({ deviceSid, nonce: "nonce-7", passHash, role: "desktop" }),
+      proof: calculateProof({ deviceSid, nonce: "nonce-7", passHash, role: "device" }),
       client_ts: expect.any(Number)
     });
     target.host.dispose();

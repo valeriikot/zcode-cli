@@ -23,9 +23,13 @@ import {
   readRemoteHostLink,
   remoteHostLinkParams,
   remoteHostLinkStorePath,
+  registerRemoteHostLink,
   remoteHostLinkSummary,
   remoteHostLinkUrl,
-  removeRemoteHostLink
+  removeRemoteHostLink,
+  writeRemoteHostLink,
+  type RegisterRemoteHostLinkOptions,
+  type RemoteHostLinkRecord
 } from "./remote/host-link.ts";
 import {
   RemoteHostService,
@@ -95,6 +99,11 @@ export interface RunRemoteCommandOptions {
   confirm?: (question: string) => Promise<boolean>;
   /** Overridden by tests so no unit test opens a socket. */
   connect?: (record: RemoteDeviceRecord, input: RemoteConnectInput) => Promise<RemoteConnectionSnapshot>;
+  /** Overridden by tests so no unit test opens a registration socket. */
+  registerHostLink?: (
+    record: RemoteHostLinkRecord,
+    options: RegisterRemoteHostLinkOptions
+  ) => Promise<RemoteHostLinkRecord>;
   /** Overridden by tests so no unit test opens a socket. */
   createHost?: (
     params: RemoteConnectionParams,
@@ -463,10 +472,14 @@ export async function runRemoteCommand(
           ["name", "relay", "urlFile"],
           "Usage: zcode remote link create [--name <name>] [--relay <url>] [--url-file <file>]"
         );
-        const result = await createRemoteHostLink({
+        const created = await createRemoteHostLink({
           ...(command.name !== undefined ? { name: command.name } : {}),
           ...(command.relay !== undefined ? { relayUrl: command.relay } : {})
         }, env);
+        const record = await (options.registerHostLink ?? registerRemoteHostLink)(created.record, {
+          ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {})
+        });
+        const result = { ...created, path: await writeRemoteHostLink(record, env), record };
         const url = remoteHostLinkUrl(result.record, options.appVersion);
         const summary = remoteHostLinkSummary(result.record);
         if (command.urlFile !== undefined) await writeUrlFile(command.urlFile, url);

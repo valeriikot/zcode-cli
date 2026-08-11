@@ -8,11 +8,13 @@ import {
   createRemoteHostLink,
   defaultRelayPageUrl,
   readRemoteHostLink,
+  registerRemoteHostLink,
   remoteHostLinkParams,
   remoteHostLinkStorePath,
   remoteHostLinkSummary,
   remoteHostLinkUrl,
-  removeRemoteHostLink
+  removeRemoteHostLink,
+  type RemoteHostRegistrationHandlers
 } from "../src/remote/host-link.ts";
 
 async function temporaryEnv(): Promise<NodeJS.ProcessEnv> {
@@ -75,6 +77,38 @@ describe("remote host link creation", () => {
     const result = await createRemoteHostLink({ relayUrl: "https://relay.example/remote/v4" }, env);
     const params = parseRemoteConnectionUrl(remoteHostLinkUrl(result.record))!;
     expect(params.source.host).toBe("relay.example");
+  });
+});
+
+describe("remote host relay registration", () => {
+  test("registers credentials and uses the relay-issued device sid", async () => {
+    const env = await temporaryEnv();
+    const created = await createRemoteHostLink({ name: "studio" }, env);
+    let handlers: RemoteHostRegistrationHandlers;
+    let socketUrl: URL | undefined;
+    const sent: Record<string, unknown>[] = [];
+    const pending = registerRemoteHostLink(created.record, {
+      appVersion: "9.9.9",
+      socketFactory: (url, nextHandlers) => {
+        socketUrl = url;
+        handlers = nextHandlers;
+        return {
+          close: () => {},
+          send: (data) => sent.push(JSON.parse(data) as Record<string, unknown>)
+        };
+      }
+    });
+    handlers!.onOpen();
+    expect(socketUrl?.toString()).toBe(`wss://zcode.z.ai/ws?mid=${created.record.mid}`);
+    expect(sent).toEqual([{
+      type: "device_register_init",
+      device_mid: created.record.mid,
+      pass_hash: created.record.passHash,
+      meta: { platform: process.platform, version: "9.9.9", name: "studio" },
+      client_ts: expect.any(Number)
+    }]);
+    handlers!.onMessage(JSON.stringify({ type: "device_register_ack", device_sid: "d_relay-issued" }));
+    expect((await pending).deviceSid).toBe("d_relay-issued");
   });
 });
 

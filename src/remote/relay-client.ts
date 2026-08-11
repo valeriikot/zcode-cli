@@ -25,7 +25,7 @@ export type RelayStateListener = (state: RelayState) => void;
 
 /** Relay roles: `terminal` controls a remote device, `desktop` is the controllable device. */
 export const relayRoles = {
-  desktop: "desktop",
+  desktop: "device",
   terminal: "terminal"
 } as const;
 

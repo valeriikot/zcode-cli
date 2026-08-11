@@ -179,7 +179,7 @@ export async function readRemoteHostLink(
   return parseStoredRecord(parsed["host"]);
 }
 
-async function writeRemoteHostLink(
+export async function writeRemoteHostLink(
   record: RemoteHostLinkRecord,
   env: NodeJS.ProcessEnv = process.env
 ): Promise<string> {
@@ -249,6 +249,91 @@ export async function createRemoteHostLink(
     ...(existing !== undefined ? { rotatedAt: now } : {})
   };
   return { path: await writeRemoteHostLink(record, env), record, rotated: existing !== undefined };
+}
+
+export interface RemoteHostRegistrationSocket {
+  close(): void;
+  send(data: string): void;
+}
+
+export interface RemoteHostRegistrationHandlers {
+  onClose(): void;
+  onError(message: string): void;
+  onMessage(data: string): void;
+  onOpen(): void;
+}
+
+export type RemoteHostRegistrationSocketFactory = (
+  url: URL,
+  handlers: RemoteHostRegistrationHandlers
+) => RemoteHostRegistrationSocket;
+
+export interface RegisterRemoteHostLinkOptions {
+  appVersion?: string;
+  socketFactory?: RemoteHostRegistrationSocketFactory;
+  timeoutMs?: number;
+}
+
+function webSocketRegistrationSocket(
+  url: URL,
+  handlers: RemoteHostRegistrationHandlers
+): RemoteHostRegistrationSocket {
+  const socket = new WebSocket(url);
+  socket.addEventListener("open", () => handlers.onOpen());
+  socket.addEventListener("message", (event) => handlers.onMessage(String(event.data)));
+  socket.addEventListener("error", () => handlers.onError("relay socket error"));
+  socket.addEventListener("close", () => handlers.onClose());
+  return { close: () => socket.close(), send: (data) => socket.send(data) };
+}
+
+/** Registers newly minted host credentials and returns the relay-issued device session id. */
+export async function registerRemoteHostLink(
+  record: RemoteHostLinkRecord,
+  options: RegisterRemoteHostLinkOptions = {}
+): Promise<RemoteHostLinkRecord> {
+  const relay = new URL(record.relayUrl);
+  const secure = relay.protocol === "https:" || relay.protocol === "wss:";
+  const socketUrl = new URL(`${secure ? "wss" : "ws"}://${relay.host}/ws`);
+  socketUrl.searchParams.set("mid", record.mid);
+  const socketFactory = options.socketFactory ?? webSocketRegistrationSocket;
+  const timeoutMs = options.timeoutMs ?? 15_000;
+
+  return await new Promise<RemoteHostLinkRecord>((resolve, reject) => {
+    let settled = false;
+    let socket: RemoteHostRegistrationSocket | undefined;
+    const finish = (error: Error | undefined, registered?: RemoteHostLinkRecord): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket?.close();
+      if (error !== undefined) reject(error);
+      else resolve(registered!);
+    };
+    const timer = setTimeout(() => finish(new Error("Remote host registration timed out.")), timeoutMs);
+    socket = socketFactory(socketUrl, {
+      onOpen: () => socket!.send(JSON.stringify({
+        type: "device_register_init",
+        device_mid: record.mid,
+        pass_hash: record.passHash,
+        meta: { platform: process.platform, version: options.appVersion ?? "web", name: record.name },
+        client_ts: Date.now()
+      })),
+      onMessage: (data) => {
+        let message: unknown;
+        try { message = JSON.parse(data); } catch { return; }
+        if (!isRecord(message)) return;
+        if (message["type"] === "device_register_ack") {
+          const deviceSid = text(message["device_sid"]);
+          if (deviceSid === undefined) return finish(new Error("Relay registration response carried no device sid."));
+          finish(undefined, { ...record, deviceSid });
+        } else if (message["type"] === "error") {
+          finish(new Error(`Remote host registration failed: ${text(message["code"]) ?? "relay error"}`));
+        }
+      },
+      onError: (message) => finish(new Error(`Remote host registration failed: ${message}`)),
+      onClose: () => finish(new Error("Remote host registration connection closed before acknowledgement."))
+    });
+  });
 }
 
 export interface RemoveRemoteHostLinkResult {

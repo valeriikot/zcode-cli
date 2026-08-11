@@ -2999,25 +2999,41 @@ function startsContextualMarkdownBlock(line: string): boolean {
   return /^(?:[ \t]| {0,3}(?:>|[-+*](?:\s|$)|\d+[.)](?:\s|$)))/u.test(line);
 }
 
-/**
- * A window chunk is re-parsed on its own, so it may only begin where Markdown
- * stops depending on earlier lines: the next item of a tight root-level list.
- * Every other position continues something — an indented or lazy paragraph
- * continuation, a setext underline, or a loose item that needs its blank
- * separator — and would re-parse into a different block.
- */
-function startsWindowChunk(lines: readonly string[], index: number): boolean {
-  const line = lines[index];
-  const previous = lines[index - 1];
-  if (!line || !previous || !/^(?:[-+*]|\d{1,9}[.)])(?: |$)/u.test(line)) return false;
-  return /^(?:(?:[-+*]|\d{1,9}[.)])(?: |$)|[ \t]+\S)/u.test(previous);
+function rootListItemMarker(line: string): { family: string; number?: number } | undefined {
+  const ordered = /^(\d{1,9})([.)]) +\S/u.exec(line);
+  if (ordered) return { family: ordered[2]!, number: Number(ordered[1]) };
+  return /^[-+*] +\S/u.test(line) ? { family: "bullet" } : undefined;
 }
 
+/**
+ * A window chunk is re-parsed alone, so it may only begin where Markdown stops
+ * depending on earlier lines. Only a root-level list of one marker family
+ * qualifies: its item starts can never be lazy continuations, and without a
+ * blank line the list stays tight, so each split renders two tight lists.
+ * Anything else — a blank line, heading, quote, setext underline or paragraph —
+ * can change how the surrounding block parses and keeps the segment whole.
+ */
 function windowChunkStarts(lines: readonly string[]): number[] {
+  const first = rootListItemMarker(lines[0] ?? "");
+  if (!first) return [0];
   const starts = [0];
-  for (let index = markdownWindowChunkLines; index < lines.length; index += 1) {
-    if (index - starts.at(-1)! < markdownWindowChunkLines) continue;
-    if (startsWindowChunk(lines, index)) starts.push(index);
+  let items = 0;
+  for (const [index, line] of lines.entries()) {
+    const marker = rootListItemMarker(line);
+    if (!marker) {
+      // An indented line always extends a bullet item, but under a wider ordered
+      // marker it may open a sibling item instead and shift every later number.
+      if (first.number !== undefined || !/^[ \t]+\S/u.test(line)) return [0];
+      continue;
+    }
+    // An ordered list is numbered from its first marker onwards, so a chunk keeps
+    // the original numbers only while the source markers stay consecutive.
+    if (marker.family !== first.family
+      || (marker.number !== undefined && marker.number !== first.number! + items)) {
+      return [0];
+    }
+    items += 1;
+    if (index - starts.at(-1)! >= markdownWindowChunkLines) starts.push(index);
   }
   return starts;
 }

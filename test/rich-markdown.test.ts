@@ -4476,6 +4476,14 @@ describe("TUI rich Markdown", () => {
         "=============="
       ].join("\n"),
       Array.from({ length: 100 }, (_, index) => `- item ${index + 1}`).join("\n\n"),
+      [
+        ...Array.from({ length: 40 }, (_, index) => `- item ${index + 1}`),
+        "",
+        ...Array.from({ length: 80 }, (_, index) => `- item ${index + 41}`)
+      ].join("\n"),
+      Array.from({ length: 120 }, (_, index) => `1. repeated marker ${index + 1}`).join("\n"),
+      Array.from({ length: 60 }, (_, index) => `${index + 1}. item ${index + 1}\n  1. sibling`)
+        .join("\n"),
       ["intro", "", ...Array.from({ length: 120 }, (_, index) => `    code ${index}`)].join("\n"),
       Array.from({ length: 120 }, (_, index) => `> quoted ${index + 1}`).join("\n")
     ];

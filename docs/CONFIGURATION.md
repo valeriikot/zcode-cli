@@ -1,8 +1,8 @@
 # Configuration
 
-This document covers the detailed model-access configuration for
-zcode-app-cli. For installation and basic usage, see the
-[main README](../README.md).
+This document covers the detailed model-access configuration for zcode-app-cli,
+plus the on-disk stores it keeps beside it. For installation and basic usage,
+see the [main README](../README.md).
 
 ## Configuration file location
 

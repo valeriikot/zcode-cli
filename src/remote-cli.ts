@@ -270,11 +270,14 @@ async function defaultConfirm(
 
 /**
  * Reads a remote-control URL from a file so the credential stays out of the shell history and the
- * process argument list. Only the first non-empty line is used.
+ * process argument list. Blank lines and `#` comments are skipped; the first remaining line is used.
  */
 async function readUrlFile(path: string): Promise<string> {
   const raw = await readFile(path, "utf8");
-  const line = raw.split(/\r?\n/u).map((entry) => entry.trim()).find((entry) => entry.length > 0);
+  const line = raw
+    .split(/\r?\n/u)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0 && !entry.startsWith("#"));
   if (line === undefined) throw new Error(`No remote-control URL was found in ${printable(path)}.`);
   return line;
 }

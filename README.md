@@ -384,7 +384,9 @@ valid until it is regenerated there, which is also how a leaked URL is revoked.
 
 Device records live beside the configuration in
 `~/.zcode/cli/remote-devices.json` with owner-only permissions. Credentials are
-redacted from all command output and error messages.
+redacted from all command output and error messages. For the store's exact
+layout, permissions and revocation notes, see
+[Configuration](./docs/CONFIGURATION.md#remote-device-store).
 
 ### Serving this machine to the web remote control
 

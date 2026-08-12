@@ -237,6 +237,15 @@ invalidates every previously issued URL; `zcode remote link revoke` deletes the
 link entirely, after which `zcode remote serve` refuses to start until a new
 link is created.
 
+`zcode remote link create` mints URLs for the public relay
+(`https://zcode.z.ai/remote/v4`) unless a different relay is configured. The
+`ZCODE_RELAY_URL` environment variable sets the default; the `--relay <url>`
+flag overrides it for a single invocation. Both accept the same absolute
+`http(s)`/`ws(s)` URLs without query or fragment. Devices registered with
+`zcode remote add` need no configuration: the pairing URL itself names the
+relay. See [Private remote-control relay](./REMOTE-RELAY.md) for running your
+own relay behind a Cloudflare Tunnel.
+
 ## Theme
 
 Set `ui.theme` to `"auto"` (terminal detection), `"dark"`, or `"light"` in the

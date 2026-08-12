@@ -1,0 +1,21 @@
+# cloudflared configuration for publishing the private zcode relay.
+#
+# Setup (once, on the relay machine):
+#   cloudflared tunnel login
+#   cloudflared tunnel create zcode-relay
+#   cloudflared tunnel route dns zcode-relay relay.example.com
+#   cp deploy/relay/cloudflared-config.example.yml ~/.cloudflared/config.yml
+#   # fill in the tunnel id below, then:
+#   cloudflared tunnel run zcode-relay        # or: sudo cloudflared service install
+#
+# cloudflared proxies WebSocket upgrades unchanged, so /ws works without
+# extra configuration. TLS terminates at the Cloudflare edge; the relay
+# itself stays plain HTTP on loopback.
+
+tunnel: <TUNNEL-ID>
+credentials-file: /home/<user>/.cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  - hostname: relay.example.com
+    service: http://127.0.0.1:8787
+  - service: http_status:404

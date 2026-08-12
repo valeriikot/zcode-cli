@@ -15,6 +15,19 @@ export default defineConfig([
     banner: { js: "#!/usr/bin/env node" }
   },
   {
+    name: "relay",
+    entry: { "zcode-relay": "src/relay/main.ts" },
+    outDir: "relay/dist",
+    outExtensions: () => ({ js: ".js" }),
+    format: "esm",
+    platform: "node",
+    target: "node22.19",
+    clean: true,
+    dts: false,
+    sourcemap: false,
+    banner: { js: "#!/usr/bin/env node" }
+  },
+  {
     name: "tui",
     entry: { index: "packages/zcode-tui/src/index.ts" },
     outDir: "packages/zcode-tui/dist",

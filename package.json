@@ -40,7 +40,9 @@
   "scripts": {
     "build": "tsdown",
     "build:launcher": "tsdown --filter launcher",
+    "build:relay": "tsdown --filter relay",
     "build:tui": "tsdown --filter tui",
+    "relay": "bun src/relay/main.ts",
     "bench:tui-memory": "bun --expose-gc scripts/bench-tui-memory.ts",
     "bench:tui-stream": "bun scripts/bench-tui-stream.ts",
     "dev": "bun run sync:local && ZCODE_NODE=node bun bin/zcode.ts",

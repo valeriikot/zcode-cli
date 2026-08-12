@@ -60,7 +60,11 @@ const remoteUsage = `Usage:
 A remote-control URL contains device credentials. Prefer --url-file so the credential never
 enters the shell history or the process argument list. \`link\` manages this machine's own
 pairing URL; \`serve\` makes this machine controllable through it, e.g. from the web remote
-control.`;
+control.
+
+\`link create\` mints URLs for the public relay (https://zcode.z.ai/remote/v4) by default.
+Point it at a private relay with --relay <url> or the ZCODE_RELAY_URL environment variable
+(--relay wins); see docs/REMOTE-RELAY.md for running one behind a Cloudflare Tunnel.`;
 
 interface ParsedRemoteCommand {
   action: string;
@@ -472,9 +476,11 @@ export async function runRemoteCommand(
           ["name", "relay", "urlFile"],
           "Usage: zcode remote link create [--name <name>] [--relay <url>] [--url-file <file>]"
         );
+        // --relay wins over the environment so a one-off command can override a machine default.
+        const relayUrl = command.relay ?? text(env["ZCODE_RELAY_URL"]);
         const created = await createRemoteHostLink({
           ...(command.name !== undefined ? { name: command.name } : {}),
-          ...(command.relay !== undefined ? { relayUrl: command.relay } : {})
+          ...(relayUrl !== undefined ? { relayUrl } : {})
         }, env);
         const record = await (options.registerHostLink ?? registerRemoteHostLink)(created.record, {
           ...(options.appVersion !== undefined ? { appVersion: options.appVersion } : {})

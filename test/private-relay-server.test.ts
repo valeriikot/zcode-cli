@@ -126,4 +126,25 @@ describe("private relay server", () => {
     expect(body).toContain(`ws://127.0.0.1:${server.port}/ws`);
     expect(body).toContain(`http://127.0.0.1:${server.port}/assets/app.js`);
   });
+
+  test("honors Cloudflare HTTPS origin when proxying through a tunnel", async () => {
+    const server = startPrivateRelayServer({
+      controllerFetch: async () => new Response("connect to wss://zcode.z.ai/ws and https://zcode.z.ai/assets/app.js", {
+        headers: { "content-type": "text/javascript" }
+      }),
+      hostname: "127.0.0.1",
+      port: 0
+    });
+    servers.push(server);
+    const response = await fetch(`http://127.0.0.1:${server.port}/remote/v4/assets/app.js`, {
+      headers: {
+        "cf-visitor": "{\"scheme\":\"https\"}",
+        "x-forwarded-host": "relay.example.com"
+      }
+    });
+    const body = await response.text();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(body).toContain("wss://relay.example.com/ws");
+    expect(body).toContain("https://relay.example.com/assets/app.js");
+  });
 });

@@ -90,8 +90,19 @@ function pairStatus(session: RelaySession): PrivateRelayPairStatus {
   return session.device !== undefined && session.terminal !== undefined ? "matched" : "waiting";
 }
 
+function requestOrigin(request: Request): string {
+  const origin = new URL(request.url);
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim();
+  const forwardedHost = request.headers.get("x-forwarded-host")?.split(",", 1)[0]?.trim();
+  const cloudflareScheme = request.headers.get("cf-visitor")?.match(/"scheme"\s*:\s*"(https?)"/u)?.[1];
+  const protocol = forwardedProto === "http" || forwardedProto === "https"
+    ? forwardedProto
+    : cloudflareScheme ?? origin.protocol.slice(0, -1);
+  return `${protocol}://${forwardedHost || origin.host}`;
+}
+
 function rewriteControllerBody(body: string, request: Request, controllerOrigin: string): string {
-  const localHttp = new URL(request.url).origin;
+  const localHttp = requestOrigin(request);
   const localWs = localHttp.replace(/^http/u, "ws");
   const controller = new URL(controllerOrigin);
   const controllerWs = `${controller.protocol === "https:" ? "wss" : "ws"}://${controller.host}`;
@@ -153,6 +164,7 @@ export function startPrivateRelayServer(options: PrivateRelayServerOptions = {})
       const contentType = headers.get("content-type") ?? "";
       if (/text|javascript|json|css|html/u.test(contentType)) {
         const body = rewriteControllerBody(await response.text(), request, controllerOrigin);
+        headers.set("cache-control", "no-store");
         headers.set("content-length", String(Buffer.byteLength(body)));
         return new Response(body, { headers, status: response.status });
       }

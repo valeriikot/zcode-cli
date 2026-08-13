@@ -10,6 +10,10 @@ import {
   manifestUrl,
   parseArgs,
   parseRuntimeLock,
+  patchRuntimeAgentAutoBackground,
+  patchRuntimeBackgroundTaskProjection,
+  patchRuntimeDetachedAgentLifecycle,
+  patchRuntimeTerminalToolProjection,
   patchRuntimeOAuthHttpErrors,
   patchRuntimeTuiBridge,
   patchRuntimeZaiDesktopOAuth,
@@ -378,13 +382,22 @@ describe("runtime synchronization", () => {
     expect(patched).toContain("E.listSkills=async()=>await H(e)");
     expect(patched).toContain("E.readGoal=async()=>await(await S()).readTarget?.()??null");
     expect(patched).toContain("E.readTodos=async()=>await(await S()).readTodos?.()??[]");
-    expect(patched).toContain("E.readRuntimeProjection=async()=>{let e=await S();return e.runtime?.getProjection?.()??null}");
+    expect(patched).toContain("E.readRuntimeProjection=async()=>{let e=await S(),t=await e.runtime?.getProjection?.();if(!t)return null;");
+    expect(patched).toContain(".filter(o=>o.isBackgrounded===!0).map(o=>");
+    expect(patched).toContain("backgroundTaskDetails:r");
     expect(patched).toContain("E.readSessionUsage=async()=>await(await S()).readSessionUsage?.()??null");
     expect(patched).toContain("E.cancelBackgroundTask=async e=>await(await S()).cancelBackgroundTask?.(e)??null");
+    expect(patched).toContain("E.subscribeSessionEvents=e=>{let t=!1,r;S().then(o=>{t||(r=o.runtime?.subscribeEvents?.({onSessionEvent:e}))});return()=>{t=!0,r?.()}}");
+    expect(patched).toContain("E.sendBackgroundTaskMessage=async e=>");
+    expect(patched).toContain('if(e?.restart===!0&&o.status==="running")');
+    expect(patched).toContain("await r.subagentPort.stopTask(e.taskId)");
+    expect(patched).toContain("r.subagentPort.sendMessage({sessionId:o.parentSessionId??r.getSessionId?.()");
     expect(patched).toContain("E.previewFileRewind=async e=>{let t=await S();return await t.runtime?.previewWorkspaceFileRewind?.({targetMessageIds:e})??null}");
     expect(patched).toContain("E.applyFileRewind=async e=>{let t=await S();return await t.runtime?.applyWorkspaceFileRewind?.({targetMessageIds:e})??null}");
     expect(patched).toContain("E.interruptTurn=async e=>");
     expect(patched).toContain("t.runtime?.stopActiveForegroundExecution?.({preserveQueueAutoDrainOnCancel:");
+    expect(patched).toContain('e?.waitForIdle===!0&&t.runtime?.getActiveForegroundExecutionId');
+    expect(patched).toContain("t.runtime.getActiveForegroundExecutionId()!==void 0");
     expect(patched).toContain("await t.reserveQueueItem(a,r)");
     expect(patched).toContain(
       "expectedTurnId:$?.expectedTurnId,delivery:\"guide\",pendingInputId:$?.pendingInputId,input:A"
@@ -413,8 +426,12 @@ describe("runtime synchronization", () => {
     expect(patched).toContain("interruptTurn:g.interruptTurn");
     expect(patched).toContain("promoteQueuedInput:g.promoteQueuedInput");
     expect(patched).toContain("listSkills:g.listSkills");
+    expect(patched).toContain("subscribeSessionEvents:g.subscribeSessionEvents");
+    expect(patched).toContain("sendBackgroundTaskMessage:g.sendBackgroundTaskMessage");
     expect(patched).toContain("sessionStore.queryTaskUsage?.({sessionID:e.sessionId})");
     expect(patchRuntimeTuiBridge(patched)).toBe(patched);
+    const previousInterruptPatch = patched.replace("e?.waitForIdle===!0", "e?.waitForIdle===!1");
+    expect(patchRuntimeTuiBridge(previousInterruptPatch)).toContain("e?.waitForIdle===!0");
     expect(() => patchRuntimeTuiBridge("incompatible runtime")).toThrow(/incompatible/);
 
     const modernRuntime = runtimeWithApp
@@ -430,5 +447,93 @@ describe("runtime synchronization", () => {
     expect(modernPatched).toContain("r=await e.sessionStore.getSession(e.sessionId);return p(r?R(t,r):t)");
     expect(modernPatched).toContain("targetMessageIds&&t.targetMessageIds.length>0");
     expect(modernPatched).not.toContain("Array.isArray(t.targetMessageIds)");
+  });
+
+  test("auto-backgrounds long Agent calls while preserving explicit configuration", () => {
+    const runtime = "function delay(){return{autoBackgroundMs:this.config.subagents?.autoBackgroundMs,outputRootDir:'tasks'}}";
+    const patched = patchRuntimeAgentAutoBackground(runtime);
+    const delay = new Function(`${patched};return delay;`)() as () => { autoBackgroundMs?: number };
+
+    expect(delay.call({ config: {} }).autoBackgroundMs).toBe(1_000);
+    expect(delay.call({ config: { subagents: { autoBackgroundMs: 0 } } }).autoBackgroundMs).toBe(0);
+    expect(patchRuntimeAgentAutoBackground(patched)).toBe(patched);
+    expect(() => patchRuntimeAgentAutoBackground("incompatible runtime")).toThrow(/incompatible/);
+  });
+
+  test("contains failures from the detached background Agent lifecycle", async () => {
+    const runtime = [
+      "async function run(){throw void 0}",
+      "async function start(){",
+      "let d={promise:Promise.resolve(),reject(){}},h={dispose(){}};",
+      "run({onSessionStartFailed:d.reject},h.dispose);try{await d.promise}catch{}",
+      "let q={promise:Promise.resolve(),reject(){}},x={dispose(){}};",
+      "run({onSessionStartFailed:q.reject},x.dispose);try{await q.promise}catch{}",
+      "await Promise.resolve();await Promise.resolve()",
+      "}"
+    ].join("");
+    const patched = patchRuntimeDetachedAgentLifecycle(runtime);
+    const diagnostics: unknown[][] = [];
+    const start = new Function(
+      "console",
+      `${patched};return start;`
+    )({ error: (...values: unknown[]) => diagnostics.push(values) }) as () => Promise<void>;
+
+    await start();
+    expect(diagnostics).toEqual([
+      ["Detached background agent lifecycle failed", "unknown rejection"],
+      ["Detached background agent lifecycle failed", "unknown rejection"]
+    ]);
+    expect(patchRuntimeDetachedAgentLifecycle(patched)).toBe(patched);
+    expect(() => patchRuntimeDetachedAgentLifecycle("incompatible runtime")).toThrow(/incompatible/);
+  });
+
+  test("keeps foreground agents out of the background task projection", () => {
+    const runtime = "function project(e){return Object.values(e.runtime?.runtimeTaskRegistry?.all?.()??{}).map(o=>o.taskId)}";
+    const patched = patchRuntimeBackgroundTaskProjection(runtime);
+    const project = new Function(`${patched};return project;`)() as (app: unknown) => string[];
+    const app = {
+      runtime: {
+        runtimeTaskRegistry: {
+          all: () => ({
+            foreground: { taskId: "foreground", isBackgrounded: false },
+            background: { taskId: "background", isBackgrounded: true }
+          })
+        }
+      }
+    };
+
+    expect(project(app)).toEqual(["background"]);
+    expect(patchRuntimeBackgroundTaskProjection(patched)).toBe(patched);
+    expect(() => patchRuntimeBackgroundTaskProjection("incompatible runtime")).toThrow(/incompatible/);
+  });
+
+  test("clears stale active tools when a runtime turn settles", () => {
+    const runtime = [
+      'function complete(e){return{...e,status:"idle",totalTokenCount:e.totalTokenCount+1}}',
+      'function fail(e){return{...e,status:"error",lastError:{message:"failed"}}}'
+    ].join("");
+    const patched = patchRuntimeTerminalToolProjection(runtime);
+    const load = new Function(`${patched};return {complete,fail};`)() as {
+      complete: (state: Record<string, unknown>) => Record<string, unknown>;
+      fail: (state: Record<string, unknown>) => Record<string, unknown>;
+    };
+    const state = {
+      activeToolCalls: [{ toolCallId: "stale", status: "running" }],
+      currentTurnId: "turn-1",
+      totalTokenCount: 0
+    };
+
+    expect(load.complete(state)).toMatchObject({
+      activeToolCalls: [],
+      currentTurnId: undefined,
+      status: "idle"
+    });
+    expect(load.fail(state)).toMatchObject({
+      activeToolCalls: [],
+      currentTurnId: undefined,
+      status: "error"
+    });
+    expect(patchRuntimeTerminalToolProjection(patched)).toBe(patched);
+    expect(() => patchRuntimeTerminalToolProjection("incompatible runtime")).toThrow(/incompatible/);
   });
 });

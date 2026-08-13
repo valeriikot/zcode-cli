@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "appVersion": "3.7.6",
   "platform": "linux",
-  "arch": "x64",
-  "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.6/linux-x64/ZCode-3.7.6-linux-x64.deb",
+  "arch": "arm64",
+  "url": "https://cdn-zcode.z.ai/zcode/electron/releases/3.7.6/linux-arm64/ZCode-3.7.6-linux-arm64.deb",
   "sha512": "G2/jCJdOOc7vlCSoqJjCyz7UTdaBWucW7+itRYU5jCEeqvirGOau3hK7HAuf4/Ahv5qQNBO3kU2JjwXx4kdCWQ=="
 }

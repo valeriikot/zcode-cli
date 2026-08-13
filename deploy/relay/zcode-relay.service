@@ -1,0 +1,42 @@
+# systemd unit for the private zcode relay.
+#
+# Install:
+#   sudo cp deploy/relay/zcode-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now zcode-relay
+#
+# The unit expects the single-file bundle produced by `bun run build:relay`
+# (see docs/REMOTE-RELAY.md). Adjust paths and the runtime user before use.
+
+[Unit]
+Description=Private zcode remote-control relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Replace with a dedicated unprivileged user.
+User=zcode-relay
+Group=zcode-relay
+ExecStart=/usr/bin/node /opt/zcode-relay/zcode-relay.js --port 8787 --state /var/lib/zcode-relay/state.json
+Restart=always
+RestartSec=2
+
+# The state file contains device credentials; keep it private to the service.
+StateDirectory=zcode-relay
+StateDirectoryMode=0700
+UMask=0077
+
+# Hardening: the relay needs nothing but a loopback socket and its state dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -447,6 +447,23 @@ live task output pushed to the web client) are not bridged yet: the host
 answers request/response channel calls and accepts event subscriptions without
 firing them.
 
+### Running a private relay
+
+The repository ships a standalone relay server (`src/relay/`) that speaks the
+same protocol as `zcode.z.ai`, so pairing can run entirely through
+infrastructure you control — typically bound to loopback and published
+through a Cloudflare Tunnel:
+
+```bash
+bun run relay -- --port 8787 --state ~/.zcode-relay/state.json
+zcode remote link create --relay https://relay.example.com/remote/v4
+```
+
+`ZCODE_RELAY_URL` sets the default relay for `link create` (`--relay` wins);
+without either, the public `https://zcode.z.ai/remote/v4` default is
+unchanged. See [Private remote-control relay](./docs/REMOTE-RELAY.md) for
+deployment, Cloudflare Tunnel configuration and security notes.
+
 ## Requirements
 
 - Node.js 22.19 or newer;

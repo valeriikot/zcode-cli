@@ -119,6 +119,34 @@ describe("zcode remote link create", () => {
     expect(bad.code).toBe(1);
     expect(bad.output.stderrText()).toContain("http(s) or ws(s)");
   });
+
+  test("defaults to the public relay when nothing is configured", async () => {
+    const env = await temporaryEnv();
+    const { code } = await run(["remote", "link", "create"], env);
+    expect(code).toBe(0);
+    expect((await readRemoteHostLink(env))!.relayUrl).toBe("https://zcode.z.ai/remote/v4");
+  });
+
+  test("uses ZCODE_RELAY_URL as the relay default and lets --relay win", async () => {
+    const env = { ...await temporaryEnv(), ZCODE_RELAY_URL: "https://private.example.com/remote/v4" };
+    const fromEnv = await run(["remote", "link", "create"], env);
+    expect(fromEnv.code).toBe(0);
+    expect((await readRemoteHostLink(env))!.relayUrl).toBe("https://private.example.com/remote/v4");
+
+    const flagWins = await run(
+      ["remote", "link", "create", "--relay", "https://other.example.com/remote/v4"],
+      env
+    );
+    expect(flagWins.code).toBe(0);
+    expect((await readRemoteHostLink(env))!.relayUrl).toBe("https://other.example.com/remote/v4");
+  });
+
+  test("rejects an invalid ZCODE_RELAY_URL", async () => {
+    const env = { ...await temporaryEnv(), ZCODE_RELAY_URL: "ftp://x" };
+    const { code, output } = await run(["remote", "link", "create"], env);
+    expect(code).toBe(1);
+    expect(output.stderrText()).toContain("http(s) or ws(s)");
+  });
 });
 
 describe("zcode remote link show", () => {

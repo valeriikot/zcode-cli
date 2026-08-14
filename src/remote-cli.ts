@@ -38,9 +38,8 @@ import {
   type RemoteHostWorkspace
 } from "./remote/host.ts";
 import type { RelayFailure, RelayState } from "./remote/relay-client.ts";
-import { startPrivateRelayServer } from "./remote/relay-server.ts";
 
-const managedActions = new Set(["add", "connect", "help", "link", "list", "relay", "remove", "serve"]);
+const managedActions = new Set(["add", "connect", "help", "link", "list", "remove", "serve"]);
 const linkActions = new Set(["create", "revoke", "show"]);
 const minimumTimeoutSeconds = 5;
 const maximumTimeoutSeconds = 600;
@@ -57,7 +56,6 @@ const remoteUsage = `Usage:
   zcode remote link create [--name <name>] [--relay <url>] [--url-file <file>] [--json]
   zcode remote link revoke [--yes] [--json]
   zcode remote serve [--workspace <path>] [--json]
-  zcode remote relay serve [--host <host>] [--port <port>] [--json]
 
 A remote-control URL contains device credentials. Prefer --url-file so the credential never
 enters the shell history or the process argument list. \`link\` manages this machine's own
@@ -70,12 +68,10 @@ Point it at a private relay with --relay <url> or the ZCODE_RELAY_URL environmen
 
 interface ParsedRemoteCommand {
   action: string;
-  host?: string;
   help: boolean;
   json: boolean;
   name?: string;
   positionals: string[];
-  port?: number;
   relay?: string;
   reveal: boolean;
   timeoutSeconds?: number;
@@ -132,7 +128,7 @@ export interface RemoteConnectInput {
   workspaceKey?: string;
 }
 
-type RemoteSpecificOption = "host" | "name" | "port" | "relay" | "reveal" | "timeout" | "urlFile" | "workspace" | "yes";
+type RemoteSpecificOption = "name" | "relay" | "reveal" | "timeout" | "urlFile" | "workspace" | "yes";
 
 const leadingBooleanOptions = new Set(["--json", "--no-color", "--verbose"]);
 const leadingValueOptions = new Set(["--cwd", "--locale"]);
@@ -187,14 +183,6 @@ function writeJson(output: Writable, value: unknown): void {
   output.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function parsePort(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined;
-  if (!/^\d{1,5}$/u.test(raw)) throw new Error("--port expects a whole number.");
-  const port = Number(raw);
-  if (port < 0 || port > 65535) throw new Error("--port must be between 0 and 65535.");
-  return port;
-}
-
 function parseTimeout(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   if (!/^\d{1,4}$/u.test(raw)) throw new Error("--timeout expects a whole number of seconds.");
@@ -216,10 +204,8 @@ function parseRemoteCommand(args: string[]): ParsedRemoteCommand | undefined {
       help: { short: "h", type: "boolean" },
       json: { type: "boolean" },
       locale: { type: "string" },
-      host: { type: "string" },
       name: { type: "string" },
       "no-color": { type: "boolean" },
-      port: { type: "string" },
       relay: { type: "string" },
       reveal: { type: "boolean" },
       timeout: { type: "string" },
@@ -233,15 +219,12 @@ function parseRemoteCommand(args: string[]): ParsedRemoteCommand | undefined {
 
   if (parsed.positionals[0] !== "remote") return undefined;
   const timeoutSeconds = parseTimeout(text(parsed.values.timeout));
-  const port = parsePort(text(parsed.values.port));
   return {
     action: parsed.positionals[1] ?? expectedAction,
     help: parsed.values.help === true,
-    host: text(parsed.values.host),
     json: parsed.values.json === true,
     name: text(parsed.values.name),
     positionals: parsed.positionals.slice(2),
-    ...(port !== undefined ? { port } : {}),
     relay: text(parsed.values.relay),
     reveal: parsed.values.reveal === true,
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
@@ -258,9 +241,7 @@ function assertSupportedOptions(
 ): void {
   const allowed = new Set(supported);
   const used: Array<[RemoteSpecificOption, boolean]> = [
-    ["host", command.host !== undefined],
     ["name", command.name !== undefined],
-    ["port", command.port !== undefined],
     ["relay", command.relay !== undefined],
     ["reveal", command.reveal],
     ["timeout", command.timeoutSeconds !== undefined],
@@ -272,9 +253,7 @@ function assertSupportedOptions(
   if (unsupported.length === 0) return;
 
   const displayNames: Record<RemoteSpecificOption, string> = {
-    host: "--host",
     name: "--name",
-    port: "--port",
     relay: "--relay",
     reveal: "--reveal",
     timeout: "--timeout",
@@ -566,32 +545,6 @@ export async function runRemoteCommand(
         if (url === undefined) stdout.write("Use --reveal to print the full pairing URL.\n");
       });
       return 0;
-    }
-
-    if (command.action === "relay") {
-      const [subaction = "serve", ...extra] = command.positionals;
-      const usage = "Usage: zcode remote relay serve [--host <host>] [--port <port>]";
-      assertSupportedOptions(command, ["host", "port"], usage);
-      if (subaction !== "serve" || extra.length > 0) throw new Error(usage);
-      if (typeof Bun === "undefined") {
-        throw new Error("The private relay requires Bun. Run this launcher with `bun bin/zcode.js remote relay serve`.");
-      }
-      const relay = startPrivateRelayServer({ hostname: command.host ?? "127.0.0.1", port: command.port ?? 7331 });
-      const url = "http://" + relay.hostname + ":" + String(relay.port) + "/remote/v4";
-      print({ event: "serving", host: relay.hostname, port: relay.port, url }, () => {
-        stdout.write("Private relay listening on " + printable(url) + "\n");
-        stdout.write("Open that URL to use the official controller through this relay. Press Ctrl+C to stop.\n");
-      });
-      return await new Promise<number>((resolveExit) => {
-        const stop = (): void => {
-          options.signal?.removeEventListener("abort", stop);
-          relay.stop();
-          if (!command!.json) stdout.write("Private relay stopped.\n");
-          resolveExit(0);
-        };
-        options.signal?.addEventListener("abort", stop, { once: true });
-        if (options.signal?.aborted) stop();
-      });
     }
 
     if (command.action === "serve") {

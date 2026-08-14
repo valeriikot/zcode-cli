@@ -3,7 +3,7 @@ import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { RelayServer, type RelayServerOptions } from "./server.ts";
+import { normalizeControllerOrigin, RelayServer, type RelayServerOptions } from "./server.ts";
 
 const minimumPort = 0;
 const maximumPort = 65_535;
@@ -14,17 +14,22 @@ const relayUsage = `Usage:
               [--page-path <path>] [--max-connections <n>] [--max-message-bytes <n>]
               [--auth-timeout-seconds <n>] [--idle-timeout-seconds <n>]
               [--registration-ttl-days <n>] [--max-registrations <n>]
+              [--controller-origin <url>]
 
 A private, single-instance relay for zcode remote control. It binds a loopback port by default
 and is meant to be published through a Cloudflare Tunnel (or any TLS-terminating reverse proxy).
 
-Environment defaults: ZCODE_RELAY_HOST, ZCODE_RELAY_PORT, ZCODE_RELAY_STATE.
-Flags win over environment variables.
+Environment defaults: ZCODE_RELAY_HOST, ZCODE_RELAY_PORT, ZCODE_RELAY_STATE,
+ZCODE_RELAY_CONTROLLER_ORIGIN. Flags win over environment variables.
 
 Endpoints:
   /ws        relay WebSocket (hosts and controllers)
   /healthz   JSON health snapshot
-  /remote/v4 pairing info page (configurable with --page-path)`;
+  /remote/v4 pairing info page (configurable with --page-path)
+
+With --controller-origin <url> (for example https://zcode.z.ai) the relay mirrors the official
+web controller at every other path instead of serving the info page, rewriting its origins so
+the page drives this relay. Only that one origin is ever fetched.`;
 
 export interface RunRelayServerOptions {
   env?: NodeJS.ProcessEnv;
@@ -61,6 +66,7 @@ export function parseRelayCommand(args: string[], env: NodeJS.ProcessEnv = proce
     args,
     options: {
       "auth-timeout-seconds": { type: "string" },
+      "controller-origin": { type: "string" },
       help: { short: "h", type: "boolean" },
       host: { type: "string" },
       "idle-timeout-seconds": { type: "string" },
@@ -99,12 +105,16 @@ export function parseRelayCommand(args: string[], env: NodeJS.ProcessEnv = proce
     64 * 1024 * 1024
   );
   const maximumRegistrations = integerOption(text(parsed.values["max-registrations"]), "--max-registrations", 1, 1_000_000);
+  const controllerOrigin = normalizeControllerOrigin(
+    text(parsed.values["controller-origin"]) ?? text(env["ZCODE_RELAY_CONTROLLER_ORIGIN"])
+  );
 
   return {
     help: parsed.values.help === true,
     json: parsed.values.json === true,
     options: {
       ...(authTimeoutSeconds !== undefined ? { authTimeoutMs: authTimeoutSeconds * 1000 } : {}),
+      ...(controllerOrigin !== undefined ? { controllerOrigin } : {}),
       ...(host !== undefined ? { host } : {}),
       ...(idleTimeoutSeconds !== undefined ? { idleTimeoutMs: idleTimeoutSeconds * 1000 } : {}),
       ...(maximumConnections !== undefined ? { maximumConnections } : {}),
@@ -159,6 +169,7 @@ export async function runRelayServer(args: string[], io: RunRelayServerOptions =
   emit(
     {
       event: "listening",
+      controllerOrigin: command.options.controllerOrigin ?? null,
       host,
       port: server.port,
       state: command.options.statePath ?? null
@@ -166,7 +177,9 @@ export async function runRelayServer(args: string[], io: RunRelayServerOptions =
     `zcode-relay listening on http://${host}:${server.port} `
     + `(ws: /ws, health: /healthz${command.options.statePath !== undefined
       ? `, state: ${command.options.statePath}`
-      : ", state: in-memory"})`
+      : ", state: in-memory"}${command.options.controllerOrigin !== undefined
+      ? `, controller: ${command.options.controllerOrigin}`
+      : ""})`
   );
   io.onStarted?.(server);
 

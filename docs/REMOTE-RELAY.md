@@ -82,12 +82,51 @@ Flags (environment fallbacks in parentheses, flags win):
 | `--auth-timeout-seconds` | `15` | Deadline to finish authenticating |
 | `--idle-timeout-seconds` | `60` | Drop silent authenticated connections |
 | `--registration-ttl-days` | `30` | Expire unused registrations |
+| `--controller-origin` (`ZCODE_RELAY_CONTROLLER_ORIGIN`) | off | Mirror the official web controller (see below) |
 | `--json` | off | Machine-readable log lines |
 
 Endpoints: `/ws` (relay protocol), `/healthz` (JSON health snapshot with
 connection/session/registration counts), and the pairing info page. The
 relay speaks plain HTTP because TLS is the tunnel's job; if you expose it
 some other way, terminate TLS in front of it.
+
+## Mirroring the official web controller
+
+By default the relay serves a static info page and tells you to pair from a
+terminal, because the browser UI at `zcode.z.ai` is wired to the public relay.
+
+`--controller-origin https://zcode.z.ai` changes that. Every path other than
+`/ws` and `/healthz` is then fetched from that origin and re-served from
+yours, with the controller's origins rewritten to point back at this relay —
+so the page you load in a browser drives your own relay over `/ws`:
+
+```bash
+node relay/dist/zcode-relay.js --port 8787 \
+  --controller-origin https://zcode.z.ai \
+  --state /var/lib/zcode-relay/state.json
+```
+
+Behind a Cloudflare Tunnel the relay only ever sees plain HTTP on loopback, so
+the rewrite reads `x-forwarded-proto`, `x-forwarded-host` and Cloudflare's
+`cf-visitor` header to emit the `https://`/`wss://` origin browsers actually
+use. Without that the rewritten bundle would point at `ws://` and be blocked.
+
+Worth knowing before turning it on:
+
+- **Only the configured origin is ever fetched.** Request paths are resolved
+  against it and rejected unless they land on the same origin, so a
+  protocol-relative path such as `//example.invalid/x` cannot make the relay
+  fetch a foreign host.
+- Requests upstream carry only `accept`, `accept-language` and `user-agent`;
+  cookies and tunnel headers are not forwarded.
+- Responses are capped at 8 MiB and time out after 15s. The upstream
+  `Content-Security-Policy` is dropped because it names the controller's
+  origin and would block every rewritten URL.
+- The relay still never logs frames, URLs or credentials — pairing URLs carry
+  `sid`/`hash` credentials in the query string, so a proxy failure logs a
+  fixed message with no request detail.
+- You are re-serving someone else's application from your origin, fetched
+  live on every request. It changes when they change it.
 
 ## Publishing through a Cloudflare Tunnel
 

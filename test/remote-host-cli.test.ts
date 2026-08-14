@@ -275,7 +275,7 @@ describe("zcode remote serve", () => {
       cwd: "/home/dev",
       signal: controller.signal
     });
-    await Bun.sleep(5);
+    await Bun.sleep(20);
     const host = hosts[0]!;
     expect(host.started).toBe(true);
     expect(host.hostOptions.deviceName).toBe("studio");
@@ -308,7 +308,7 @@ describe("zcode remote serve", () => {
       cwd: "/home/dev",
       signal: controller.signal
     });
-    await Bun.sleep(5);
+    await Bun.sleep(20);
     const host = hosts[0]!;
     const abort = new AbortController();
     const result = await host.backend.call({

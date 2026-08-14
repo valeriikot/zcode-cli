@@ -15,6 +15,8 @@ const defaultPort = 8787;
 const defaultPagePath = "/remote/v4";
 const defaultMaximumConnections = 256;
 const defaultSweepIntervalMs = 1000;
+const defaultControllerTimeoutMs = 15_000;
+const defaultMaximumControllerBodyBytes = 8 * 1024 * 1024;
 const requestHeaderTimeoutMs = 10_000;
 const maximumRequestHeaderBytes = 16 * 1024;
 const stateSaveDebounceMs = 250;
@@ -23,9 +25,20 @@ const webSocketPath = "/ws";
 
 export interface RelayServerOptions {
   authTimeoutMs?: number;
+  /** Injection point for tests; defaults to the global `fetch`. */
+  controllerFetch?: (url: URL, init: RequestInit) => Promise<Response>;
+  /**
+   * Origin of the official web controller to mirror at every non-relay path, e.g.
+   * `https://zcode.z.ai`. Unset (the default) serves the static pairing page instead and nothing
+   * ever leaves this machine.
+   */
+  controllerOrigin?: string;
+  controllerTimeoutMs?: number;
   host?: string;
   idleTimeoutMs?: number;
   maximumConnections?: number;
+  /** Cap on a single proxied controller response held in memory before rewriting. */
+  maximumControllerBodyBytes?: number;
   maximumMessageBytes?: number;
   maximumRegistrations?: number;
   now?: () => number;
@@ -148,20 +161,23 @@ function parseHttpRequestHead(head: Buffer): ParsedHttpRequest | undefined {
 }
 
 interface HttpResponse {
-  body?: string;
-  headers?: Record<string, string>;
+  body?: Buffer | string;
+  /** An array value repeats the header, which `set-cookie` needs. */
+  headers?: Record<string, string | string[]>;
   status: number;
   statusText: string;
 }
 
 function writeHttpResponse(socket: Socket, method: string, response: HttpResponse): void {
-  const body = Buffer.from(response.body ?? "", "utf8");
+  const body = Buffer.isBuffer(response.body) ? response.body : Buffer.from(response.body ?? "", "utf8");
   const lines = [
     `HTTP/1.1 ${response.status} ${response.statusText}`,
     "connection: close",
-    `content-length: ${body.length}`,
-    ...Object.entries(response.headers ?? {}).map(([name, value]) => `${name}: ${value}`)
+    `content-length: ${body.length}`
   ];
+  for (const [name, value] of Object.entries(response.headers ?? {})) {
+    for (const single of Array.isArray(value) ? value : [value]) lines.push(`${name}: ${single}`);
+  }
   try {
     socket.write(`${lines.join("\r\n")}\r\n\r\n`);
     if (method !== "HEAD" && body.length > 0) socket.write(body);
@@ -169,6 +185,119 @@ function writeHttpResponse(socket: Socket, method: string, response: HttpRespons
   } catch {
     socket.destroy();
   }
+}
+
+/** Request headers passed upstream. An allowlist keeps cookies and tunnel headers off the wire. */
+const forwardedControllerRequestHeaders = ["accept", "accept-language", "user-agent"] as const;
+
+/** Response headers the relay must own rather than copy from upstream. */
+const strippedControllerResponseHeaders = new Set([
+  "connection",
+  // `fetch` already decoded the payload, and rewriting changes its length.
+  "content-encoding",
+  "content-length",
+  // The upstream policy names the controller's origin and would block every rewritten URL.
+  "content-security-policy",
+  "content-security-policy-report-only",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade"
+]);
+
+const rewritableControllerTypes = /\b(?:css|html|javascript|json|text|xml)\b/u;
+
+function firstHeaderValue(raw: string | undefined): string | undefined {
+  const value = raw?.split(",", 1)[0]?.trim();
+  return value !== undefined && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The origin browsers actually use to reach this relay. Behind a Cloudflare Tunnel the relay only
+ * ever sees plain HTTP on loopback, so the forwarded headers are the only evidence that the public
+ * origin is HTTPS — rewriting the bundle to `http://`/`ws://` there would break the controller.
+ */
+function requestOrigin(request: ParsedHttpRequest, fallbackHost: string): string {
+  const forwardedProtocol = firstHeaderValue(request.headers["x-forwarded-proto"]);
+  const cloudflareScheme = request.headers["cf-visitor"]?.match(/"scheme"\s*:\s*"(https?)"/u)?.[1];
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https"
+    ? forwardedProtocol
+    : cloudflareScheme ?? "http";
+  const host = firstHeaderValue(request.headers["x-forwarded-host"])
+    ?? firstHeaderValue(request.headers["host"])
+    ?? fallbackHost;
+  return `${protocol}://${host}`;
+}
+
+/** Reduces a controller origin to bare `scheme://host[:port]`, rejecting anything else. */
+export function normalizeControllerOrigin(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("The controller origin must be an absolute http(s) URL.");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("The controller origin must use http or https.");
+  }
+  return parsed.origin;
+}
+
+/**
+ * Resolves a request path against the controller origin, refusing anything that lands elsewhere.
+ * Without the origin check a protocol-relative path such as `//example.invalid/x` resolves to a
+ * foreign host and turns the relay into an open proxy.
+ */
+export function controllerTarget(path: string, controllerOrigin: string): URL | undefined {
+  if (!path.startsWith("/")) return undefined;
+  try {
+    const target = new URL(path, controllerOrigin);
+    return target.origin === new URL(controllerOrigin).origin ? target : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Points the controller bundle back at this relay so the page opens a WebSocket to `/ws` here
+ * instead of the public relay. Absolute origins are rewritten first, then bare hostnames, which
+ * covers the host-only forms the bundle builds URLs from at runtime.
+ */
+export function rewriteControllerBody(body: string, localOrigin: string, controllerOrigin: string): string {
+  const controller = new URL(controllerOrigin);
+  const controllerWebSocket = `${controller.protocol === "https:" ? "wss" : "ws"}://${controller.host}`;
+  const local = new URL(localOrigin);
+  const localWebSocket = `${local.protocol === "https:" ? "wss" : "ws"}://${local.host}`;
+  return body
+    .replaceAll(controllerWebSocket, localWebSocket)
+    .replaceAll(controller.origin, local.origin)
+    .replaceAll(controller.host, local.host);
+}
+
+/** Reads at most `limit` bytes, returning `undefined` when the response exceeds it. */
+async function readBoundedBody(response: Response, limit: number): Promise<Buffer | undefined> {
+  const stream = response.body;
+  if (stream === null) return Buffer.alloc(0);
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) return undefined;
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+    if (total > limit) await stream.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks);
 }
 
 /**
@@ -179,8 +308,12 @@ function writeHttpResponse(socket: Socket, method: string, response: HttpRespons
  * and binds 127.0.0.1 by default.
  */
 export class RelayServer {
+  private readonly controllerFetch: (url: URL, init: RequestInit) => Promise<Response>;
+  private readonly controllerOrigin: string | undefined;
+  private readonly controllerTimeoutMs: number;
   private readonly core: RelayCore;
   private readonly maximumConnections: number;
+  private readonly maximumControllerBodyBytes: number;
   private readonly maximumMessageBytes: number | undefined;
   private readonly now: () => number;
   private readonly onLog: ((line: string) => void) | undefined;
@@ -197,7 +330,11 @@ export class RelayServer {
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
 
   private constructor(options: RelayServerOptions) {
+    this.controllerFetch = options.controllerFetch ?? ((url, init) => fetch(url, init));
+    this.controllerOrigin = normalizeControllerOrigin(options.controllerOrigin);
+    this.controllerTimeoutMs = options.controllerTimeoutMs ?? defaultControllerTimeoutMs;
     this.maximumConnections = options.maximumConnections ?? defaultMaximumConnections;
+    this.maximumControllerBodyBytes = options.maximumControllerBodyBytes ?? defaultMaximumControllerBodyBytes;
     this.maximumMessageBytes = options.maximumMessageBytes;
     this.now = options.now ?? (() => Date.now());
     this.onLog = options.onLog;
@@ -369,6 +506,11 @@ export class RelayServer {
       });
       return;
     }
+    // Mirroring the controller replaces the static page: the real UI has to answer every asset path.
+    if (this.controllerOrigin !== undefined) {
+      void this.proxyController(socket, request, this.controllerOrigin);
+      return;
+    }
     if (path === this.pagePath || path === "/") {
       writeHttpResponse(socket, request.method, {
         status: 200,
@@ -389,6 +531,96 @@ export class RelayServer {
       body: "not found\n",
       headers: { "content-type": "text/plain; charset=utf-8" }
     });
+  }
+
+  /**
+   * Serves the official web controller from this origin. Fetching it here and rewriting its
+   * origins is what lets the real UI drive a private relay: the browser loads one origin, so the
+   * page's WebSocket lands on `/ws` above instead of the public relay.
+   *
+   * Pairing URLs carry `sid`/`hash` credentials in the query string, so nothing derived from the
+   * request — path, query or upstream error text — is ever logged.
+   */
+  private async proxyController(socket: Socket, request: ParsedHttpRequest, controllerOrigin: string): Promise<void> {
+    const target = controllerTarget(request.path, controllerOrigin);
+    if (target === undefined) {
+      writeHttpResponse(socket, request.method, {
+        status: 404,
+        statusText: "Not Found",
+        body: "not found\n",
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
+      return;
+    }
+
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), this.controllerTimeoutMs);
+    timer.unref?.();
+    try {
+      const headers: Record<string, string> = {};
+      for (const name of forwardedControllerRequestHeaders) {
+        const value = request.headers[name];
+        if (value !== undefined) headers[name] = value;
+      }
+      const upstream = await this.controllerFetch(target, {
+        headers,
+        method: "GET",
+        redirect: "follow",
+        signal: abort.signal
+      });
+      const body = await readBoundedBody(upstream, this.maximumControllerBodyBytes);
+      if (body === undefined) {
+        this.log("[relay] controller response exceeded the size cap");
+        writeHttpResponse(socket, request.method, {
+          status: 502,
+          statusText: "Bad Gateway",
+          body: "controller response too large\n",
+          headers: { "content-type": "text/plain; charset=utf-8" }
+        });
+        return;
+      }
+
+      const responseHeaders: Record<string, string | string[]> = {};
+      for (const [name, value] of upstream.headers) {
+        if (strippedControllerResponseHeaders.has(name)) continue;
+        // A header smuggled through upstream must never break out of the response head.
+        if (/[\r\n]/u.test(name) || /[\r\n]/u.test(value)) continue;
+        if (name === "set-cookie") continue;
+        responseHeaders[name] = value;
+      }
+      const cookies = upstream.headers.getSetCookie?.() ?? [];
+      const safeCookies = cookies.filter((cookie) => !/[\r\n]/u.test(cookie));
+      if (safeCookies.length > 0) responseHeaders["set-cookie"] = safeCookies;
+
+      const contentType = upstream.headers.get("content-type") ?? "";
+      if (rewritableControllerTypes.test(contentType)) {
+        const localOrigin = requestOrigin(request, `${defaultHost}:${this.port}`);
+        responseHeaders["cache-control"] = "no-store";
+        writeHttpResponse(socket, request.method, {
+          status: upstream.status,
+          statusText: upstream.statusText || "OK",
+          body: rewriteControllerBody(body.toString("utf8"), localOrigin, controllerOrigin),
+          headers: responseHeaders
+        });
+        return;
+      }
+      writeHttpResponse(socket, request.method, {
+        status: upstream.status,
+        statusText: upstream.statusText || "OK",
+        body,
+        headers: responseHeaders
+      });
+    } catch {
+      this.log("[relay] controller request failed");
+      writeHttpResponse(socket, request.method, {
+        status: 502,
+        statusText: "Bad Gateway",
+        body: "controller unavailable\n",
+        headers: { "content-type": "text/plain; charset=utf-8" }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private acceptRelaySocket(socket: Socket, request: ParsedHttpRequest, head: Buffer): void {

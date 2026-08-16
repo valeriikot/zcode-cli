@@ -39,11 +39,14 @@ describe("runtime synchronization", () => {
     const lock = await Bun.file(new URL("../zcode-runtime.lock.json", import.meta.url)).json();
     const release = parseReleaseVersion(String(packageJson.version));
 
+    // Local fork pin: linux-arm64 for the Raspberry Pi build; upstream CI pins x64.
+    const expectedArch = process.env.ZCODE_RUNTIME_ARCH ?? "arm64";
+
     expect(lock).toMatchObject({
       schemaVersion: 1,
       appVersion: release?.appVersion,
       platform: "linux",
-      arch: "x64"
+      arch: expectedArch
     });
     expect(lock.url).toMatch(/^https:\/\/cdn-zcode\.z\.ai\/.+\.deb$/u);
     expect(Buffer.from(String(lock.sha512), "base64")).toHaveLength(64);

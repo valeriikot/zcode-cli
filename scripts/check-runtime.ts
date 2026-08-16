@@ -6,7 +6,11 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { formatVersionOutput, readDistributionVersion } from "../src/launcher.ts";
-import { supportsMultiMessageFileRewind } from "./sync-runtime.ts";
+import {
+  patchRuntimeContextCacheFromParts,
+  patchRuntimeLoginModelDefaults,
+  supportsMultiMessageFileRewind
+} from "./sync-runtime.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtime = join(root, "vendor", "zcode.cjs");
@@ -30,7 +34,9 @@ if (packageManifest.dependencies?.["playwright-core"] !== "1.59.1"
 }
 
 const runtimeSource = await Bun.file(runtime).text();
-if (!runtimeSource.includes('"plugin://"')
+if (patchRuntimeLoginModelDefaults(runtimeSource) !== runtimeSource
+  || patchRuntimeContextCacheFromParts(runtimeSource) !== runtimeSource
+  || !runtimeSource.includes('"plugin://"')
   || !runtimeSource.includes('return await import("playwright-core")')
   || !runtimeSource.includes('pluginsReferenceCatalog:"plugins/referenceCatalog"')
   || !runtimeSource.includes('pluginsMarketplaceAdd:"plugins/marketplace/add"')
@@ -38,6 +44,7 @@ if (!runtimeSource.includes('"plugin://"')
   || runtimeSource.includes('"OAuth response is not valid JSON",{httpStatus:void 0}')
   || !runtimeSource.includes('ZCODE_CLI_OAUTH_CALLBACK_STDIN==="1"')
   || !runtimeSource.includes(".loadSessionTranscript=async()=>await(await")
+  || !runtimeSource.includes('"loadSessionContextMessages"')
   || !runtimeSource.includes(".readGoal=async()=>await(await")
   || !runtimeSource.includes(".readTodos=async()=>await(await")
   || !runtimeSource.includes(".readRuntimeProjection=async()=>")

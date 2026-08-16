@@ -55,7 +55,14 @@ and it never logs frames, URLs or credentials.
 
 ## Running the relay
 
-From a checkout of this repository:
+The npm package ships the relay as a second binary, so any machine that installed
+`zcode-app-cli` can serve one (Node.js 22.19+ is the only requirement):
+
+```bash
+zcode-relay --port 8787 --state ~/.zcode-relay/state.json
+```
+
+From a checkout of this repository you can also run the TypeScript source directly:
 
 ```bash
 bun run relay -- --port 8787 --state ~/.zcode-relay/state.json
@@ -195,9 +202,11 @@ zcode remote add --url-file ./pairing-url.txt --name workstation
 zcode remote connect workstation
 ```
 
-Opening the pairing URL in a browser shows a static info page (the official
-web remote control is not hosted on a private relay); pairing from the CLI is
-the supported controller workflow.
+Opening the pairing URL in a browser shows a static info page unless the relay
+runs with `--controller-origin`, in which case the official web controller is
+mirrored from your relay and the pairing URL drives it directly (see
+"Mirroring the official web controller" above). Pairing from the CLI
+(`zcode remote add` + `zcode remote connect`) works either way.
 
 ## Security notes
 

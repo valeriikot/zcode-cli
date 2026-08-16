@@ -12,6 +12,7 @@ import { parseRuntimeLock } from "./sync-runtime.ts";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const publishedFiles = [
   "bin/zcode.js",
+  "relay/dist/zcode-relay.js",
   "vendor",
   "config.example.json",
   "zcode-runtime.lock.json",
@@ -79,6 +80,7 @@ export async function validatePackageTree(base = root): Promise<void> {
     "bin/zcode.ts",
     "config.example.json",
     "package.json",
+    "relay/dist/zcode-relay.js",
     "src/app-server-client.ts",
     "src/command.ts",
     "src/darwin-oauth-callback.ts",
@@ -119,6 +121,9 @@ export async function validatePackageTree(base = root): Promise<void> {
     throw new Error("The npm package license or author metadata is missing.");
   }
   if (packageJson.bin?.zcode !== "bin/zcode.js") throw new Error("The zcode npm bin entry is invalid.");
+  if (packageJson.bin?.["zcode-relay"] !== "relay/dist/zcode-relay.js") {
+    throw new Error("The zcode-relay npm bin entry is invalid.");
+  }
   if (!sameStringArray(packageJson.files, publishedFiles)) {
     throw new Error("The package.json files allowlist does not match the reviewed release contents.");
   }
@@ -179,6 +184,18 @@ export async function validatePackageTree(base = root): Promise<void> {
   }
   if (process.platform !== "win32" && (nodeLauncher.mode & 0o111) === 0) {
     throw new Error("The public zcode launcher is not executable.");
+  }
+
+  const relayBundle = await readFile(join(base, "relay", "dist", "zcode-relay.js"), "utf8");
+  if (!relayBundle.startsWith("#!/usr/bin/env node\n")) {
+    throw new Error("The packaged relay bundle has no Node.js shebang.");
+  }
+  if (relayBundle.includes("Bun.")) {
+    throw new Error("The packaged relay bundle must run under plain Node.js.");
+  }
+  if (process.platform !== "win32") {
+    const relayStat = await stat(join(base, "relay", "dist", "zcode-relay.js"));
+    if ((relayStat.mode & 0o111) === 0) throw new Error("The packaged relay bundle is not executable.");
   }
 
   console.log(`Package tree checks passed for ${String(packageJson.name)}@${String(packageJson.version)}.`);

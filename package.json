@@ -27,10 +27,12 @@
   },
   "type": "module",
   "bin": {
-    "zcode": "bin/zcode.js"
+    "zcode": "bin/zcode.js",
+    "zcode-relay": "relay/dist/zcode-relay.js"
   },
   "files": [
     "bin/zcode.js",
+    "relay/dist/zcode-relay.js",
     "vendor",
     "config.example.json",
     "zcode-runtime.lock.json",

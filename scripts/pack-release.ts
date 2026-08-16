@@ -35,6 +35,7 @@ const requiredFiles = [
   "LICENSE",
   "README.md",
   "bin/zcode.js",
+  "relay/dist/zcode-relay.js",
   "config.example.json",
   "package.json",
   "vendor/extraction.json",
@@ -47,6 +48,7 @@ const allowedRoots = new Set([
   "LICENSE",
   "README.md",
   "bin/zcode.js",
+  "relay/dist/zcode-relay.js",
   "config.example.json",
   "package.json",
   "zcode-runtime.lock.json"
@@ -81,8 +83,12 @@ export function validatePackResult(result: PackResult, packageJson: PackageIdent
       throw new Error(`npm tarball contains an unreviewed path: ${path}`);
     }
   }
-  const bin = result.files.find((file) => file.path === "bin/zcode.js");
-  if (!bin || (bin.mode & 0o111) === 0) throw new Error("npm tarball zcode bin is not executable.");
+  for (const binPath of ["bin/zcode.js", "relay/dist/zcode-relay.js"]) {
+    const bin = result.files.find((file) => file.path === binPath);
+    if (!bin || (bin.mode & 0o111) === 0) {
+      throw new Error(`npm tarball ${binPath} is missing or not executable.`);
+    }
+  }
 }
 
 export async function packRelease(): Promise<void> {

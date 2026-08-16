@@ -16,6 +16,7 @@ const requiredPaths = [
   "LICENSE",
   "README.md",
   "bin/zcode.js",
+  "relay/dist/zcode-relay.js",
   "config.example.json",
   "package.json",
   "vendor/extraction.json",
@@ -24,9 +25,10 @@ const requiredPaths = [
   "vendor/zcode.cjs",
   "zcode-runtime.lock.json"
 ];
+const executablePaths = new Set(["bin/zcode.js", "relay/dist/zcode-relay.js"]);
 
 function packFile(path: string): PackFile {
-  return { path, mode: path === "bin/zcode.js" ? 0o755 : 0o644, size: 1 };
+  return { path, mode: executablePaths.has(path) ? 0o755 : 0o644, size: 1 };
 }
 
 function result(files = requiredPaths.map(packFile)): PackResult {
@@ -124,8 +126,16 @@ describe("release package", () => {
         type: "git",
         url: "git+https://github.com/kingsword09/zcode-cli.git"
       },
-      bin: { zcode: "bin/zcode.js" },
-      files: ["bin/zcode.js", "vendor", "config.example.json", "zcode-runtime.lock.json", "README.md", "LICENSE"],
+      bin: { zcode: "bin/zcode.js", "zcode-relay": "relay/dist/zcode-relay.js" },
+      files: [
+        "bin/zcode.js",
+        "relay/dist/zcode-relay.js",
+        "vendor",
+        "config.example.json",
+        "zcode-runtime.lock.json",
+        "README.md",
+        "LICENSE"
+      ],
       publishConfig: { access: "public", provenance: true },
       dependencies: {
         "@earendil-works/pi-tui": "^0.80.6",
@@ -144,6 +154,7 @@ describe("release package", () => {
       "bin/zcode.ts": "export {};\n",
       "config.example.json": "{}\n",
       "package.json": `${JSON.stringify(packageJson)}\n`,
+      "relay/dist/zcode-relay.js": "#!/usr/bin/env node\nimport { createServer } from \"node:net\";\n",
       "src/app-server-client.ts": "export {};\n",
       "src/command.ts": "export {};\n",
       "src/darwin-oauth-callback.ts": "export {};\n",
@@ -174,6 +185,7 @@ describe("release package", () => {
         await writeFile(destination, content);
       }
       await chmod(join(directory, "bin", "zcode.js"), 0o755);
+      await chmod(join(directory, "relay", "dist", "zcode-relay.js"), 0o755);
       await expect(validatePackageTree(directory)).resolves.toBeUndefined();
       await writeFile(join(directory, "vendor", "node_modules", "@zcode", "tui", "dist", "index.js"), "stale\n");
       await expect(validatePackageTree(directory)).rejects.toThrow(/stale/);

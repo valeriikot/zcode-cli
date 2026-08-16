@@ -74,6 +74,28 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Reasons the official web controller's `workspace-bridge-error` schema accepts; anything else
+ * makes it reject (and silently drop) the whole payload.
+ */
+export type RemoteBridgeErrorReason = "unsupported-action" | "workspace-closed";
+
+/**
+ * One workspace as the official web controller's overview schemas require it: `workspacePath` and
+ * `label` are mandatory non-empty strings, and the controller derives its workspace key from
+ * `workspacePath` when no `workspaceIdentity` is present. `workspaceKey` and `name` are not in
+ * that schema but zcode-cli's own controller reads them; the official one strips unknown keys.
+ */
+function workspaceOverviewEntry(workspace: RemoteHostWorkspace): Record<string, unknown> {
+  return {
+    kind: "local",
+    label: workspace.name ?? workspace.key,
+    workspacePath: workspace.path ?? workspace.key,
+    workspaceKey: workspace.key,
+    ...(workspace.name !== undefined ? { name: workspace.name } : {})
+  };
+}
+
 function encodeChannelFrame(type: number, id: number, data: unknown): Uint8Array {
   const writer = new ValueWriter();
   encodeValue(writer, [type, id]);
@@ -178,6 +200,12 @@ export class RemoteHostService {
   private disposed = false;
   private lastViewState: Record<string, unknown> | undefined;
   private platform: string;
+  /**
+   * Opaque session id the official controller requires in every bootstrap result. It identifies
+   * the desktop's optional window-control session; CLI hosts never open one, but the field must
+   * be a non-empty string or the whole payload is rejected.
+   */
+  private readonly windowControlSessionId = randomUUID();
 
   constructor(params: RemoteConnectionParams, backend: RemoteHostBackend, options: RemoteHostServiceOptions = {}) {
     this.backend = backend;
@@ -300,15 +328,17 @@ export class RemoteHostService {
   }
 
   private async serveOverview(payload: RelayPayload, responseType: string, describeHost: boolean): Promise<void> {
-    const workspaces = (await this.listWorkspaces()).map((workspace) => ({
-      workspaceKey: workspace.key,
-      ...(workspace.name !== undefined ? { name: workspace.name } : {}),
-      ...(workspace.path !== undefined ? { workspacePath: workspace.path } : {})
-    }));
+    const workspaces = (await this.listWorkspaces()).map(workspaceOverviewEntry);
     this.relay.sendPayload({
       zcode_type: responseType,
       ...(stringField(payload["requestId"]) !== undefined ? { requestId: payload["requestId"] } : {}),
+      // The official web controller validates every payload against a schema that requires a
+      // literal `success: true` (plus `windowControlSessionId` and `tasks` for bootstrap) and
+      // drops responses not matching it, which surfaces as a desktop-bootstrap timeout.
+      success: true,
       result: {
+        ...(describeHost ? { windowControlSessionId: this.windowControlSessionId } : {}),
+        tasks: [],
         ...(describeHost && this.appVersion !== undefined ? { appVersion: this.appVersion } : {}),
         ...(describeHost && this.deviceName !== undefined ? { deviceName: this.deviceName } : {}),
         ...(describeHost ? { platform: this.platform } : {}),
@@ -322,21 +352,26 @@ export class RemoteHostService {
     const bridgeSessionId = stringField(payload["bridgeSessionId"]);
     const workspaceKey = stringField(payload["workspaceKey"]);
     if (bridgeSessionId === undefined) return;
-    const fail = (error: string): void => {
+    const fail = (error: string, reason: RemoteBridgeErrorReason): void => {
       this.relay.sendPayload({
         zcode_type: "workspace-bridge-error",
         ...(requestId !== undefined ? { requestId } : {}),
         bridgeSessionId,
+        reason,
         error
       });
     };
     if (workspaceKey === undefined) {
-      fail("workspace-bridge-open carried no workspaceKey");
+      fail("workspace-bridge-open carried no workspaceKey", "unsupported-action");
       return;
     }
     const workspaces = await this.listWorkspaces();
-    if (!workspaces.some((workspace) => workspace.key === workspaceKey)) {
-      fail(`unknown workspace: ${workspaceKey}`);
+    // The official controller derives its workspace key from `workspacePath` (unless the overview
+    // advertised a `workspaceIdentity`), while zcode-cli's own controller echoes the advertised
+    // `workspaceKey`; a bridge-open for either must land on the same workspace.
+    const workspace = workspaces.find((entry) => entry.key === workspaceKey || entry.path === workspaceKey);
+    if (workspace === undefined) {
+      fail(`unknown workspace: ${workspaceKey}`, "workspace-closed");
       return;
     }
     if (this.disposed) return;
@@ -373,10 +408,14 @@ export class RemoteHostService {
       ...(requestId !== undefined ? { requestId } : {}),
       bridgeSessionId,
       bridge: {
+        // The official controller's bridge schema is a discriminated union on `kind` and requires
+        // a non-empty `workspacePath`; a payload without both is dropped and the bridge stalls.
+        kind: "local",
         bridgeSessionId,
         bridgeGeneration,
         recoveryId: bridge.recoveryId,
         workspaceKey,
+        workspacePath: workspace.path ?? workspaceKey,
         ...(taskId !== undefined ? { initialTaskId: taskId } : {})
       }
     });
@@ -392,7 +431,9 @@ export class RemoteHostService {
     this.relay.sendPayload({
       zcode_type: "workspace-reconnect-response",
       ...(stringField(payload["requestId"]) !== undefined ? { requestId: payload["requestId"] } : {}),
-      ...(workspaceKey !== undefined ? { workspaceKey } : {}),
+      // Both variants of the controller's reconnect-response schema require a non-empty
+      // workspaceKey; the request schema guarantees one, the fallback only guards the type.
+      workspaceKey: workspaceKey ?? "unknown",
       success: alive,
       ...(alive ? {} : { error: "no live bridge for that workspace" })
     });

@@ -223,11 +223,20 @@ describe("host overview envelopes", () => {
     expect(sentPayloads(target)).toEqual([{
       zcode_type: "bootstrap-response",
       requestId: "boot-1",
+      success: true,
       result: {
         appVersion: "3.3.3",
         deviceName: "studio",
         platform: "linux",
-        workspaces: [{ workspaceKey: "ws-1", name: "project", workspacePath: "/home/dev/project" }]
+        tasks: [],
+        windowControlSessionId: expect.any(String),
+        workspaces: [{
+          kind: "local",
+          label: "project",
+          name: "project",
+          workspaceKey: "ws-1",
+          workspacePath: "/home/dev/project"
+        }]
       }
     }]);
     target.host.dispose();
@@ -241,7 +250,17 @@ describe("host overview envelopes", () => {
     expect(sentPayloads(target)).toEqual([{
       zcode_type: "workspace-list-response",
       requestId: "list-1",
-      result: { workspaces: [{ workspaceKey: "ws-1", name: "project", workspacePath: "/home/dev/project" }] }
+      success: true,
+      result: {
+        tasks: [],
+        workspaces: [{
+          kind: "local",
+          label: "project",
+          name: "project",
+          workspaceKey: "ws-1",
+          workspacePath: "/home/dev/project"
+        }]
+      }
     }]);
     target.host.dispose();
   });
@@ -255,7 +274,7 @@ describe("host overview envelopes", () => {
     pair(target);
     deliver(target, { zcode_type: "workspace-list-request", requestId: "list-1" });
     await Bun.sleep(1);
-    expect(sentPayloads(target)[0]!["result"]).toEqual({ workspaces: [] });
+    expect(sentPayloads(target)[0]!["result"]).toEqual({ tasks: [], workspaces: [] });
     target.host.dispose();
   });
 });
@@ -275,6 +294,7 @@ describe("host workspace bridges", () => {
       zcode_type: "workspace-bridge-error",
       requestId: "open-1",
       bridgeSessionId: "bridge-1",
+      reason: "workspace-closed",
       error: "unknown workspace: nope"
     }]);
     expect(target.host.activeBridgeCount).toBe(0);
@@ -291,15 +311,38 @@ describe("host workspace bridges", () => {
       requestId: "open-1",
       bridgeSessionId: "bridge-1",
       bridge: {
+        kind: "local",
         bridgeSessionId: "bridge-1",
         bridgeGeneration: 1,
         recoveryId: expect.stringMatching(/^recovery-/u),
-        workspaceKey: "ws-1"
+        workspaceKey: "ws-1",
+        workspacePath: "/home/dev/project"
       }
     });
     expect(bridge.responses).toEqual([{ data: undefined, id: 0, type: channelResponseType.initialize }]);
     expect(target.host.activeBridgeCount).toBe(1);
     bridge.dispose();
+    target.host.dispose();
+  });
+
+  test("opens a bridge keyed by workspacePath, as the official controller derives it", async () => {
+    const target = harness();
+    pair(target);
+    // The official web controller derives its workspace key from `workspacePath` when the
+    // overview carried no `workspaceIdentity`, so its bridge-open arrives with the path.
+    deliver(target, {
+      zcode_type: "workspace-bridge-open",
+      requestId: "open-path",
+      bridgeSessionId: "bridge-path",
+      workspaceKey: "/home/dev/project"
+    });
+    await Bun.sleep(1);
+    const ready = sentPayloads(target).find((payload) => payload["zcode_type"] === "workspace-bridge-ready");
+    expect(ready).toMatchObject({
+      bridgeSessionId: "bridge-path",
+      bridge: { kind: "local", workspaceKey: "/home/dev/project", workspacePath: "/home/dev/project" }
+    });
+    expect(target.host.activeBridgeCount).toBe(1);
     target.host.dispose();
   });
 
